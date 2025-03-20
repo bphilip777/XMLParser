@@ -1,0 +1,10 @@
+<type category="struct" name="VkInstanceCreateInfo">
+  <member values="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"><type>VkStructureType</type> <name>sType</name></member>
+  <member optional="true">const <type>void</type>*     <name>pNext</name></member>
+  <member optional="true"><type>VkInstanceCreateFlags</type>  <name>flags</name></member>
+  <member optional="true">const <type>VkApplicationInfo</type>* <name>pApplicationInfo</name></member>
+  <member optional="true"><type>uint32_t</type>               <name>enabledLayerCount</name></member>
+  <member len="enabledLayerCount,null-terminated">const <type>char</type>* const*      <name>ppEnabledLayerNames</name><comment>Ordered list of layer names to be enabled</comment></member>
+  <member optional="true"><type>uint32_t</type>               <name>enabledExtensionCount</name></member>
+  <member len="enabledExtensionCount,null-terminated">const <type>char</type>* const*      <name>ppEnabledExtensionNames</name><comment>Extension names to be enabled</comment></member>
+</type>
