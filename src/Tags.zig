@@ -72,7 +72,7 @@ pub fn getTagsV(data: Data) void { // !std.ArrayList(Tag) {
     // use simd + multiple threads to get all close tag positions
 }
 
-pub fn getNumberOfTagsV(comptime T: type, data: Data) !T {
+pub fn getNumberOfTagsV(comptime T: type, data: []const u8) !T {
     // Steps:
     // 0. T = comptime input, must be unsigned int
     // 1. count the number of < inside data = # of tags, skip "" or '' = # of openings
@@ -83,62 +83,105 @@ pub fn getNumberOfTagsV(comptime T: type, data: Data) !T {
     const n_threads: T = 8;
     var n_opens = [_]T{0} ** n_threads;
     var n_closes = [_]T{0} ** n_threads;
-    const len: T = @truncate(data.data.len);
+    const len: T = @truncate(data.len);
     const step: T = len / n_threads;
 
-    _ = blk: {
+    {
+        // var event = std.Thread.ResetEvent{};
         inline for (0..n_threads) |i| {
             const start: T = @as(T, @truncate(i)) * step;
             const end: T = start + step;
-            const thread = try std.Thread.spawn(.{}, getNumberOfTagsPerBlock, .{ T, data.data[start..end], &n_opens[i], &n_closes[i] });
-            defer thread.detach();
+            const thread = try std.Thread.spawn(.{}, getNumberOfTagsPerBlock, .{ T, data[start..end], &n_opens[i], &n_closes[i] });
+            defer thread.join();
+            // defer thread.detach();
         }
-        break :blk 0;
-    };
+        // event.wait();
+    }
 
     const V: type = @Vector(n_threads, T);
     const n_open: T = @reduce(.Add, @as(V, n_opens));
     const n_close: T = @reduce(.Add, @as(V, n_closes));
     std.debug.print("# of Opens: {}\n", .{n_open});
     std.debug.print("# of Closes: {}\n", .{n_close});
-    std.debug.assert(n_open == n_close);
+    // std.debug.assert(n_open == n_close);
     return n_open;
 }
 
-fn getNumberOfTagsPerBlock(comptime T: type, data: []const u8, n_open: *T, n_close: *T) void {
+test "Get Number of Tags V" {
+    const data: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const n_opens = try Tag.getNumberOfTagsV(u16, data);
+    try std.testing.expect(n_opens == 8);
+}
+
+fn getNumberOfTagsPerBlock(comptime T: type, data: []const u8, n_open_ptr: *T, n_close_ptr: *T) void {
     var i: T = 0;
     const len = data.len;
 
-    const V_len = 64;
+    var n_open: T = n_open_ptr.*;
+    var n_close: T = n_open_ptr.*;
+
+    const V_len: T = 64;
     const V: type = @Vector(V_len, u8);
+
     const open_char: V = @splat('<');
     const close_char: V = @splat('>');
 
-    // var overflow_paren: bool = false; // inside paren
-    while (i + V_len < len) : (i += 8) {
+    const squote: V = @splat('\'');
+    const dquote: V = @splat('\"');
+
+    var is_single_open: bool = false;
+    var is_double_open: bool = false;
+
+    while (i + V_len < len) : (i += V_len) {
         const v = @as(V, data[i..][0..V_len].*);
 
-        // const parens: u64 = @bitCast(v == '\"' or v == '\'');
+        var o: u64 = @as(u64, @bitCast(v == open_char));
+        var c: u64 = @as(u64, @bitCast(v == close_char));
 
-        const o: u64 = @bitCast(v == open_char);
-        n_open.* += @as(T, @popCount(o));
+        const s: u64 = @as(u64, @bitCast(v == squote));
+        // turn off all bits up to first match
+        if (is_single_open) {
+            if (@reduce(.Or, s)) {
+                is_single_open = false;
+            }
+        }
+        while (s > 0) {}
 
-        const c: u64 = @bitCast(v == close_char);
-        n_close.* += @as(T, @popCount(c));
+        const d: u64 = @as(u64, @bitCast(v == dquote));
+        if (is_double_open) {
+            if (@reduce(.Or, d)) {
+                is_double_open = false;
+            }
+        }
+        while (d > 0) {}
+
+        n_open += @as(T, @popCount(o));
+        n_close += @as(T, @popCount(c));
     }
 
     if (i + 1 < len) {
-        var bit: [V_len]u8 = undefined;
-        @memcpy(bit[0 .. len - i - 1], data[i..][0 .. len - i - 1]);
-        @memset(bit[len - i - 1 .. V_len], 0);
+        var bit = [_]u8{0} ** V_len;
+        @memcpy(bit[0 .. len - i], data[i..][0 .. len - i]);
         const v: V = bit;
 
         const o: u64 = @bitCast(v == open_char);
-        n_open.* += @as(T, @popCount(o));
+        n_open += @as(T, @popCount(o));
 
         const c: u64 = @bitCast(v == close_char);
-        n_close.* += @as(T, @popCount(c));
+        n_close += @as(T, @popCount(c));
     }
+
+    n_open_ptr.* = n_open;
+    n_close_ptr.* = n_close;
+}
+
+test "Get Number of Tags Per Block" {
+    const T: type = u16;
+    var n_open: T = 0;
+    var n_close: T = 0;
+    const data: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    getNumberOfTagsPerBlock(T, data, &n_open, &n_close);
+    try std.testing.expect(n_open == n_close);
 }
 
 pub fn getNumberOfTags(comptime T: type, data: Data) !T {

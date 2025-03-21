@@ -18,3 +18,5 @@
      - inline pfns
      - structs
      - types (u16, u64)
+4. Test XML Parser
+   - on vk.xml
