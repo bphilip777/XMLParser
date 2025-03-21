@@ -176,3 +176,7 @@ pub fn main() !void {
 // Extern Struct:
 // Look for tags that start w/ type
 // Parse the data
+
+test "Basics" {
+    _ = @import("Tags.zig");
+}
