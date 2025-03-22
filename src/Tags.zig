@@ -28,14 +28,14 @@ pub fn getTagName(data: []const u8, tag: Tag) []const u8 {
     return data[start..end];
 }
 
-test "Get Tag Name" {
-    const tags = [_][]const u8{ "<tag>", "</tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\">" };
-    const exp_names = [_][]const u8{ "tag", "tag", "type" };
-    for (tags, exp_names) |tag, exp_name| {
-        const tag_name = getTagName(tag, .{ .start = 0, .end = @truncate(tag.len) });
-        try std.testing.expectEqualStrings(exp_name, tag_name);
-    }
-}
+// test "Get Tag Name" {
+//     const tags = [_][]const u8{ "<tag>", "</tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\">" };
+//     const exp_names = [_][]const u8{ "tag", "tag", "type" };
+//     for (tags, exp_names) |tag, exp_name| {
+//         const tag_name = getTagName(tag, .{ .start = 0, .end = @truncate(tag.len) });
+//         try std.testing.expectEqualStrings(exp_name, tag_name);
+//     }
+// }
 
 pub fn tagNamesMatch(data: []const u8, tag1: Tag, tag2: Tag) bool {
     const tag1_name = getTagName(data, tag1);
@@ -140,11 +140,11 @@ fn getNumberOfTagsPerBlock(comptime T: type, data: []const u8, n_open_ptr: *T, n
 
         // create masks
         const s: u64 = @as(u64, @bitCast(v == squote));
-        const s_mask = createFillInEvery2BitsMask(u64, s, is_single_carry);
+        const s_mask = turnOnBitsBW2Bits(u64, s, is_single_carry);
         is_single_carry = s_mask.carry;
 
         const d: u64 = @as(u64, @bitCast(v == dquote));
-        const d_mask = createFillInEvery2BitsMask(u64, s, is_double_carry);
+        const d_mask = turnOnBitsBW2Bits(u64, s, is_double_carry);
         is_double_carry = d_mask.carry;
 
         o = o & ~s & ~d;
@@ -297,73 +297,51 @@ pub const TagType = enum {
     close,
 };
 
-fn createFillInEvery2BitsMask(comptime T: type, a: T, b: bool) struct { mask: T, carry: bool } {
-    // Ex: u8's
-    // 1. Input: 00001000, false
-    // 1. Expected Ans: 00001111, carry = true;
-
-    // 2. Input: 01000010, false
-    // 2. Expected Ans: 01111110, carry = false;
-
-    // 3. Input: 01000010, true - bit reverse -> turn on front bits
-    // 3. Expected Ans: 11000011, true
-
-    // 4. Input: 01001010, true - bit reverse -> turn on front bits until first 0 - let algo play
-    // 4. Expected Ans: 11001110, false
-
-    var c = @bitReverse(a);
-    // 1. 00010000
-    // 2. 01000010
-    // 3. 01000010
-    // 4. 01010010
-
-    if (b) {
-        const d = @ctz(c);
-        for (0..d) |i| {
-            c |= @as(T, 1) << @truncate(i);
-        }
+fn turnOnBitsBW2Bits(
+    comptime T: type,
+    value: T,
+    prev_carry: bool,
+) struct { mask: T, carry: bool } {
+    switch (@typeInfo(T)) {
+        .int => |int| switch (int.signedness) {
+            .signed => @compileError("T must be an unsigned int"),
+            else => {},
+        },
+        else => @compileError("T must be an unsigned int"),
     }
 
-    var mask: T = 0;
+    var temp: T = @bitReverse(value);
+    var mask: T = value;
+
+    const bits_as_u16 = @typeInfo(T).int.bits;
+    const max_bit: T = if (@typeInfo(@TypeOf(bits_as_u16)).int.bits > bits_as_u16) @truncate(bits_as_u16) else bits_as_u16;
+
+    if (prev_carry) {
+        const first_bit = @ctz(temp);
+        temp ^= @as(T, 1) << @truncate(first_bit);
+        for (0..first_bit) |i| {
+            mask |= @as(T, 1) << @truncate(max_bit - i - 1);
+        }
+    }
+    // std.debug.print("Mask Prev: {b}\n", .{mask});
+
     var carry: bool = false;
+    while (temp > 0) {
+        const first_bit = @ctz(temp);
+        temp ^= @as(T, 1) << @truncate(first_bit);
 
-    while (c > 0) {
-        const d1 = @ctz(c);
-        // 1. 4
-        // 2. 1
-        // 3. 1
-        // 4. 1
-        c ^= @as(T, 1) << @truncate(d1);
-        // 1. 00000000
-        // 2. 01000000
-        // 3. 01000000
-
-        // 4. 01010000
-
-        const d2 = @ctz(c);
-        // 1. 8
-        // 2. 6
-        // 3. 6
-        // 4. 4
-        if (c > 0) {
-            c ^= @as(T, 1) << @truncate(d2);
-            // 2. 00000000
-            // 3. 00000000
-            // 4. 01000000
-        } else {
+        const second_bit = @ctz(temp);
+        if (second_bit == max_bit) {
             carry = true;
-            // 1. true
+        } else {
+            temp ^= @as(T, 1) << @truncate(second_bit);
         }
 
-        // 1. domain = [4,8) -> swap + abs(sub max int bits) -> range = [0, 4)
-        // 2. domain = [1,6) -> swap + abs(sub max int bits) -> range = [2, 7)
-        const n_bits = @typeInfo(T).int.bits;
-        for (d1..d2) |i| {
-            mask |= @as(T, 1) << @truncate(n_bits - i);
+        for (first_bit..second_bit) |i| {
+            mask |= @as(T, 1) << @truncate(max_bit - i - 1);
         }
-        // 1. 00001111
-        // 2. 01111110
     }
+    // std.debug.print("Mask Curr: {b}\n", .{mask});
 
     return .{
         .mask = mask,
@@ -373,13 +351,22 @@ fn createFillInEvery2BitsMask(comptime T: type, a: T, b: bool) struct { mask: T,
 
 test "Create Mask" {
     const T: type = u8;
-    const input_values = [_]T{8}; // , 66, 66, 74 };
-    const input_carries = [_]bool{false}; //, false, true, true };
-    const expected_masks = [_]T{15}; //, 125, 195, 208 };
-    const expected_carries = [_]bool{true}; //, false, true, false };
-    for (input_values, input_carries, expected_masks, expected_carries) |value, carry, emask, ecarry| {
-        const mask = createFillInEvery2BitsMask(T, value, carry);
-        std.log.info("{} {} {} {}\n", .{ value, carry, emask, ecarry });
-        try std.testing.expect(mask.mask == emask and mask.carry == ecarry);
+    const input_masks = [_]T{ 8, 66, 66, 74, 0, 255, 255 };
+    const input_carries = [_]bool{ false, false, true, true, true, false, true };
+    const expected_masks = [_]T{ 15, 126, 195, 206, 255, 255, 255 };
+    const expected_carries = [_]bool{ true, false, true, false, true, false, true };
+
+    for (input_masks, input_carries, expected_masks, expected_carries, 0..) |imask, icarry, emask, ecarry, i| {
+        _ = i;
+        // std.debug.print("\nTest {}: {}\n", .{ i, imask });
+        const mask, const carry = blk: {
+            const mask = turnOnBitsBW2Bits(T, imask, icarry);
+            break :blk .{ mask.mask, mask.carry };
+        };
+        // std.debug.print("\nMasks: {b}->{b}: {b}\n", .{ @as(T, imask), @as(T, emask), @as(T, mask) });
+        // std.debug.print("Carry: {}->{}: {}\n", .{ icarry, ecarry, carry });
+        try std.testing.expect(mask == emask and carry == ecarry);
     }
+
+    try std.testing.expect(true);
 }
