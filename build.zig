@@ -14,7 +14,12 @@ pub fn build(b: *std.Build) void {
         .name = "XMLParser",
         .root_module = exe_mod,
     });
+
+    const bittricks = b.dependency("BitTricks", .{});
+    exe.root_module.addImport("BitTricks", bittricks.module("BitTricks"));
+
     b.installArtifact(exe);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
