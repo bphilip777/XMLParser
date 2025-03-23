@@ -16,7 +16,8 @@ pub fn build(b: *std.Build) void {
     });
 
     const bittricks = b.dependency("BitTricks", .{});
-    exe.root_module.addImport("BitTricks", bittricks.module("BitTricks"));
+    exe.root_module.addImport("bittricks", bittricks.module("root.zig"));
+    // exe.root_module.addImport("BitTricks", bittricks.module("BitTricks"));
 
     b.installArtifact(exe);
 

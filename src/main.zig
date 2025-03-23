@@ -20,6 +20,9 @@ pub fn main() !void {
     const n_opens = try Tag.getNumberOfTagsV(u16, data);
     std.debug.print("Open: {}\n", .{n_opens});
 
+    const tags = try Tag.getTagsV(data);
+    defer tags.deinit();
+
     // try writeTags(allo, data, "src/tags.zig", &tags);
     // printTags(data, &tags);
 

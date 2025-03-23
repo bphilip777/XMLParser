@@ -140,16 +140,20 @@ fn getNumberOfTagsPerBlock(comptime T: type, data: []const u8, n_open_ptr: *T, n
         var c: u64 = @as(u64, @bitCast(v == close_char));
 
         // create masks
+        // another way to do this that might be faster - find next on single quote bit, find next on double quote bit -
         const s: u64 = @as(u64, @bitCast(v == squote));
         const s_mask = BitTricks.turnOnBitsBW2Bits(u64, s, is_single_carry);
         is_single_carry = s_mask.carry;
 
         const d: u64 = @as(u64, @bitCast(v == dquote));
-        const d_mask = BitTricks.turnOnBitsBW2Bits(u64, s, is_double_carry);
+        const d_mask = BitTricks.turnOnBitsBW2Bits(u64, d, is_double_carry);
         is_double_carry = d_mask.carry;
 
-        o = o & ~s & ~d;
-        c = c & ~s & ~d;
+        o &= ~s_mask;
+        o &= ~d_mask;
+
+        c &= ~s_mask;
+        c &= ~d_mask;
 
         n_open += @as(T, @popCount(o));
         n_close += @as(T, @popCount(c));
