@@ -3,30 +3,31 @@ const Data = @import("Data.zig");
 const Tag = @import("Tags.zig");
 
 pub fn main() !void {
-    // var da = std.heap.DebugAllocator(.{}){};
-    // defer std.debug.assert(.ok == da.deinit());
-    // const allo = da.allocator();
+    var da = std.heap.DebugAllocator(.{}){};
+    defer std.debug.assert(.ok == da.deinit());
+    const allo = da.allocator();
 
     // const filename = "src/vk.xml";
     // const filename = "src/vk_extern_struct.xml";
     // const data = try Data.init(allo, filename);
     // defer data.deinit();
 
-    // const n_tags = try Tag.getNumberOfTagsV(u16, data);
-    // const n_tags2 = try Tag.getNumberOfTags(u16, data);
-    // std.debug.assert(n_tags == n_tags2);
-
-    const data: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const n_opens = try Tag.getNumberOfTagsV(u16, data);
-    std.debug.print("Open: {}\n", .{n_opens});
-
-    const tags = try Tag.getTagsV(data);
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    std.debug.print("Length: {}\n", .{text.len});
+    const tags = try Tag.getTagsV(allo, text);
     defer tags.deinit();
+    for (tags.items) |tag| {
+        std.debug.print("Tag: {}:{} ", .{ tag.start, tag.end });
+        std.debug.print("{s}\n", .{text[tag.start + 1 .. tag.end]});
+    }
+
+    // const tags = try Tag.getTagsV(data);
+    // defer tags.deinit();
 
     // try writeTags(allo, data, "src/tags.zig", &tags);
     // printTags(data, &tags);
 
-    // // Parse Elements
+    // Parse Elements
     // var elements = try getElements(allo, data, tags.items);
     // defer elements.deinit(allo);
     // defer {

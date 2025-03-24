@@ -29,14 +29,14 @@ pub fn getTagName(data: []const u8, tag: Tag) []const u8 {
     return data[start..end];
 }
 
-// test "Get Tag Name" {
-//     const tags = [_][]const u8{ "<tag>", "</tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\">" };
-//     const exp_names = [_][]const u8{ "tag", "tag", "type" };
-//     for (tags, exp_names) |tag, exp_name| {
-//         const tag_name = getTagName(tag, .{ .start = 0, .end = @truncate(tag.len) });
-//         try std.testing.expectEqualStrings(exp_name, tag_name);
-//     }
-// }
+test "Get Tag Name" {
+    const tags = [_][]const u8{ "<tag>", "</tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\">" };
+    const exp_names = [_][]const u8{ "tag", "tag", "type" };
+    for (tags, exp_names) |tag, exp_name| {
+        const tag_name = getTagName(tag, .{ .start = 0, .end = @truncate(tag.len) });
+        try std.testing.expectEqualStrings(exp_name, tag_name);
+    }
+}
 
 pub fn tagNamesMatch(data: []const u8, tag1: Tag, tag2: Tag) bool {
     const tag1_name = getTagName(data, tag1);
@@ -44,14 +44,14 @@ pub fn tagNamesMatch(data: []const u8, tag1: Tag, tag2: Tag) bool {
     return std.mem.eql(u8, tag1_name, tag2_name);
 }
 
-// test "Tag Names Match" {
-//     const data = [_][]const u8{ "<tag></tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\"></type>" };
-//     const tag1s = [_]Tag{ .{ .start = 0, .end = 4 }, .{ .start = 0, .end = 44 } };
-//     const tag2s = [_]Tag{ .{ .start = 5, .end = 10 }, .{ .start = 52, .end = 58 } };
-//     for (data, tag1s, tag2s) |datum, tag1, tag2| {
-//         try std.testing.expect(tagNamesMatch(datum, tag1, tag2));
-//     }
-// }
+test "Tag Names Match" {
+    const data = [_][]const u8{ "<tag></tag>", "<type category=\"struct\" name=\"VkInstanceCreateInfo\"></type>" };
+    const tag1s = [_]Tag{ .{ .start = 0, .end = 4 }, .{ .start = 0, .end = 44 } };
+    const tag2s = [_]Tag{ .{ .start = 5, .end = 10 }, .{ .start = 52, .end = 58 } };
+    for (data, tag1s, tag2s) |datum, tag1, tag2| {
+        try std.testing.expect(tagNamesMatch(datum, tag1, tag2));
+    }
+}
 
 fn skipComment(comptime T: type, data: []const u8, i: T) T {
     var j: T = i + 1;
@@ -62,150 +62,32 @@ fn skipComment(comptime T: type, data: []const u8, i: T) T {
     return j;
 }
 
-pub fn getTagsV(data: Data) void { // !std.ArrayList(Tag) {
-    const n_tags = getNumberOfTagsV(u16, data) catch unreachable;
-    std.debug.print("# of Tags: {}\n", .{n_tags});
-
-    var tags = std.ArrayList(Tag).initCapacity(data.allo, n_tags) catch unreachable;
-    defer tags.deinit();
-
-    // use simd + multiple threads to get all open tag positions
-    // use simd + multiple threads to get all close tag positions
-}
-
-pub fn getNumberOfTagsV(comptime T: type, data: []const u8) !T {
-    // Steps:
-    // 0. T = comptime input, must be unsigned int
-    // 1. count the number of < inside data = # of tags, skip "" or '' = # of openings
-    // 2. count the number of > inside data = # of tags, skip "" or '' = # of closings
-    // 3. assert # of openings = # of closings
-    // 4. return # of tags
-
-    const n_threads: T = 8;
-    var n_opens = [_]T{0} ** n_threads;
-    var n_closes = [_]T{0} ** n_threads;
-    const len: T = @truncate(data.len);
-    const step: T = len / n_threads;
-
-    {
-        // var event = std.Thread.ResetEvent{};
-        inline for (0..n_threads) |i| {
-            const start: T = @as(T, @truncate(i)) * step;
-            const end: T = start + step;
-            const thread = try std.Thread.spawn(.{}, getNumberOfTagsPerBlock, .{ T, data[start..end], &n_opens[i], &n_closes[i] });
-            defer thread.join();
-            // defer thread.detach();
-        }
-        // event.wait();
-    }
-
-    const V: type = @Vector(n_threads, T);
-    const n_open: T = @reduce(.Add, @as(V, n_opens));
-    const n_close: T = @reduce(.Add, @as(V, n_closes));
-    std.debug.print("# of Opens: {}\n", .{n_open});
-    std.debug.print("# of Closes: {}\n", .{n_close});
-    // std.debug.assert(n_open == n_close);
-    return n_open;
-}
-
-// test "Get Number of Tags V" {
-//     const data: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     const n_opens = try Tag.getNumberOfTagsV(u16, data);
-//     try std.testing.expect(n_opens == 8);
-// }
-
-fn getNumberOfTagsPerBlock(comptime T: type, data: []const u8, n_open_ptr: *T, n_close_ptr: *T) void {
-    var i: T = 0;
-    const len = data.len;
-
-    var n_open: T = n_open_ptr.*;
-    var n_close: T = n_open_ptr.*;
-
-    const V_len: T = 64;
-    const V: type = @Vector(V_len, u8);
-
-    const open_char: V = @splat('<');
-    const close_char: V = @splat('>');
-
-    const squote: V = @splat('\'');
-    const dquote: V = @splat('\"');
-
-    var is_single_carry: bool = false;
-    var is_double_carry: bool = false;
-
-    while (i + V_len < len) : (i += V_len) {
-        const v = @as(V, data[i..][0..V_len].*);
-
-        var o: u64 = @as(u64, @bitCast(v == open_char));
-        var c: u64 = @as(u64, @bitCast(v == close_char));
-
-        // create masks
-        // another way to do this that might be faster - find next on single quote bit, find next on double quote bit -
-        const s: u64 = @as(u64, @bitCast(v == squote));
-        const s_mask = BitTricks.turnOnBitsBW2Bits(u64, s, is_single_carry);
-        is_single_carry = s_mask.carry;
-
-        const d: u64 = @as(u64, @bitCast(v == dquote));
-        const d_mask = BitTricks.turnOnBitsBW2Bits(u64, d, is_double_carry);
-        is_double_carry = d_mask.carry;
-
-        o &= ~s_mask;
-        o &= ~d_mask;
-
-        c &= ~s_mask;
-        c &= ~d_mask;
-
-        n_open += @as(T, @popCount(o));
-        n_close += @as(T, @popCount(c));
-    }
-
-    if (i + 1 < len) {
-        var bit = [_]u8{0} ** V_len;
-        @memcpy(bit[0 .. len - i], data[i..][0 .. len - i]);
-        const v: V = bit;
-
-        const o: u64 = @bitCast(v == open_char);
-        n_open += @as(T, @popCount(o));
-
-        const c: u64 = @bitCast(v == close_char);
-        n_close += @as(T, @popCount(c));
-    }
-
-    n_open_ptr.* = n_open;
-    n_close_ptr.* = n_close;
-}
-
-// test "Get Number of Tags Per Block" {
-//     const T: type = u16;
-//     var n_open: T = 0;
-//     var n_close: T = 0;
-//     const data: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     getNumberOfTagsPerBlock(T, data, &n_open, &n_close);
-//     try std.testing.expect(n_open == n_close);
-// }
-
-pub fn getNumberOfTags(comptime T: type, data: Data) !T {
-    var n_opens: T = 0;
-    var n_closes: T = 0;
+pub fn count(comptime T: type, text: []const u8, char: u8) T {
+    var n_found: T = 0;
 
     var i: T = 0;
-    while (i < data.data.len) : (i += 1) {
-        const ch = data.data[i];
-        switch (ch) {
-            '<' => n_opens += 1,
-            '>' => n_closes += 1,
-            '\'', '\"' => i = skipComment(T, data.data, i),
-            else => {},
+    while (i < text.len) : (i += 1) {
+        const ch = text[i];
+        if (ch == '\'' or ch == '\"') {
+            i = skipComment(T, text, i);
+            continue;
         }
+        n_found += @intFromBool(ch == char);
     }
-    std.debug.assert(n_opens == n_closes);
-    return n_opens;
+
+    return n_found;
 }
 
-pub fn getTags(
-    allo: std.mem.Allocator,
-    data: []const u8,
-) !std.ArrayList(Tag) {
+test "Count Tags" {
+    const T: type = u16;
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const n_open = count(T, text, '<');
+    const n_close = count(T, text, '>');
+    try std.testing.expect(n_open == n_close);
+    try std.testing.expect(n_open == 8);
+}
+
+pub fn getTags(allo: std.mem.Allocator, data: []const u8) !std.ArrayList(Tag) {
     var tags = std.ArrayList(Tag).initCapacity(allo, 1_024) catch unreachable;
 
     var found_prolog: bool = false;
@@ -261,14 +143,14 @@ pub fn getTagType(data: []const u8, tag: Tag) TagType {
     };
 }
 
-// test "Get Tag Type" {
-//     const names = [_][]const u8{ "<name>", "</name>", "<?xml>" };
-//     const values = [_]TagType{ .open, .close, .prolog };
-//     for (names, values) |name, value| {
-//         const tag_type = getTagType(name, .{ .start = 0, .end = @truncate(name.len) });
-//         try std.testing.expect(tag_type == value);
-//     }
-// }
+test "Get Tag Type" {
+    const names = [_][]const u8{ "<name>", "</name>", "<?xml>" };
+    const values = [_]TagType{ .open, .close, .prolog };
+    for (names, values) |name, value| {
+        const tag_type = getTagType(name, .{ .start = 0, .end = @truncate(name.len) });
+        try std.testing.expect(tag_type == value);
+    }
+}
 
 pub fn writeTags(
     allo: std.mem.Allocator,
@@ -301,3 +183,261 @@ pub const TagType = enum {
     open,
     close,
 };
+
+pub fn countV(comptime T: type, text: []const u8, char: u8) T {
+    // assumes no intersections b/w quotes, only subsets (one pair of quotes w/in another) or independent (no overlap)
+    var n_found: T = 0;
+
+    const LEN: u32 = @truncate(text.len);
+
+    const VECTOR_LENGTH: u32 = 64;
+    const V: type = @Vector(VECTOR_LENGTH, u8);
+    const v: V = @splat(char);
+    const s: V = @splat('\'');
+    const d: V = @splat('\"');
+
+    var squote_carry: bool = false;
+    var dquote_carry: bool = false;
+
+    var i: u32 = 0;
+    while (i + VECTOR_LENGTH < LEN) : (i += VECTOR_LENGTH) {
+        const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
+
+        var matches = @as(u64, @bitCast(v == data_vector));
+
+        var squote_matches = @as(u64, @bitCast(data_vector == s));
+        squote_matches, squote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        var dquote_matches = @as(u64, @bitCast(data_vector == d));
+        dquote_matches, dquote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        matches &= ~squote_matches;
+        matches &= ~dquote_matches;
+
+        n_found += @popCount(matches);
+    }
+
+    if (i != LEN) {
+        var data = [_]u8{0} ** VECTOR_LENGTH;
+        @memcpy(data[0 .. text.len - i], text[i..text.len]);
+        const data_vector: V = @as(V, data);
+
+        var matches = @as(u64, @bitCast(v == data_vector));
+
+        var squote_matches = @as(u64, @bitCast(data_vector == s));
+        squote_matches, squote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        var dquote_matches = @as(u64, @bitCast(data_vector == d));
+        dquote_matches, dquote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        matches &= ~squote_matches;
+        matches &= ~dquote_matches;
+
+        n_found += @popCount(matches);
+    }
+
+    return n_found;
+}
+
+test "Count Tags - Vectorized Version" {
+    const T: type = u16;
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const n_open = countV(T, text, '<');
+    const n_close = countV(T, text, '>');
+    try std.testing.expect(n_open == n_close);
+    try std.testing.expect(n_open == 8);
+}
+
+pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
+    // Vectorized Version of get Tags
+    // assumes no intersection b/w quotes - only subsets or independent quotes (i.e. '""' or ''"", no '"'")
+    // assumes '<' precedes '>', all independent, no subsets (i.e. no <<>>, only <><>)
+    const n_tags = countV(u32, text, '<');
+    var tags = try std.ArrayList(Tag).initCapacity(allo, n_tags);
+
+    const LEN: u32 = @truncate(text.len);
+
+    // vectors
+    const VECTOR_LENGTH: u8 = 64;
+    const V: type = @Vector(VECTOR_LENGTH, u8);
+    const o: V = @splat('<');
+    const c: V = @splat('>');
+    const s: V = @splat('\'');
+    const d: V = @splat('\"');
+
+    // flags
+    var open_carry: bool = false;
+    var open_position: u32 = 0;
+
+    var squote_carry: bool = false;
+    var dquote_carry: bool = false;
+
+    var i: u32 = 0;
+    while (i + VECTOR_LENGTH < LEN) : (i += VECTOR_LENGTH) {
+        const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
+
+        // matches are in bitreverse order already
+        var open_matches = @as(u64, @bitCast(o == data_vector));
+        var close_matches = @as(u64, @bitCast(c == data_vector));
+        var squote_matches = @as(u64, @bitCast(s == data_vector));
+        var dquote_matches = @as(u64, @bitCast(d == data_vector));
+
+        // turn quote matches into masks
+        squote_matches, squote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        dquote_matches, dquote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        // remove matches within masks
+        open_matches &= ~squote_matches;
+        close_matches &= ~squote_matches;
+
+        open_matches &= ~dquote_matches;
+        close_matches &= ~dquote_matches;
+
+        if (open_carry) {
+            if (close_matches == 0) continue;
+
+            const c_bit = @ctz(close_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+            try tags.append(.{
+                .start = open_position,
+                .end = i + c_bit,
+            });
+
+            open_carry = false;
+        }
+
+        // assume all open matches precede close matches + no open carry + no intersections of open and close carries
+        while (close_matches > 0) {
+            const o_bit = @ctz(open_matches);
+            const c_bit = @ctz(close_matches);
+
+            open_matches = BitTricks.turnOffLastBit(u64, open_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+
+            try tags.append(.{
+                .start = i + o_bit,
+                .end = i + c_bit,
+            });
+        }
+
+        if (open_matches > 0) {
+            open_carry = true;
+            open_position = i + @ctz(open_matches);
+        }
+    }
+
+    if (i != LEN) {
+        var data = [_]u8{0} ** VECTOR_LENGTH;
+        @memcpy(data[0 .. text.len - i], text[i..text.len]);
+        const data_vector: V = @as(V, data);
+
+        // matches are in bitreverse order already
+        var open_matches = @as(u64, @bitCast(o == data_vector));
+        var close_matches = @as(u64, @bitCast(c == data_vector));
+        var squote_matches = @as(u64, @bitCast(s == data_vector));
+        var dquote_matches = @as(u64, @bitCast(d == data_vector));
+
+        // turn quote matches into masks
+        squote_matches, squote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        dquote_matches, dquote_carry = blk: {
+            const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        // remove matches within masks
+        open_matches &= ~squote_matches;
+        close_matches &= ~squote_matches;
+
+        open_matches &= ~dquote_matches;
+        close_matches &= ~dquote_matches;
+
+        if (open_carry) {
+            const c_bit = @ctz(close_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+            try tags.append(.{
+                .start = open_position,
+                .end = i + c_bit,
+            });
+
+            open_carry = false;
+        }
+
+        // assume all open matches precede close matches + no open carry + no intersections of open and close carries
+        while (close_matches > 0) {
+            const o_bit = @ctz(open_matches);
+            const c_bit = @ctz(close_matches);
+
+            open_matches = BitTricks.turnOffLastBit(u64, open_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+
+            try tags.append(.{
+                .start = i + o_bit,
+                .end = i + c_bit,
+            });
+        }
+    }
+
+    return tags;
+}
+
+test "Vectorized Get Tags" {
+    const allo = std.testing.allocator;
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+
+    const expected_tags = [8]Tag{
+        .{ .start = 0, .end = 7 },
+        .{ .start = 8, .end = 14 },
+        .{ .start = 26, .end = 33 },
+        .{ .start = 34, .end = 39 },
+        .{ .start = 44, .end = 50 },
+        .{ .start = 51, .end = 56 },
+        .{ .start = 72, .end = 78 },
+        .{ .start = 79, .end = 87 },
+    };
+    const tags = try getTagsV(allo, text);
+    defer tags.deinit();
+
+    const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
+
+    for (tags.items, expected_tags, expected_names) |tag, expected_tag, expected_name| {
+        try std.testing.expectEqualDeep(expected_tag, tag);
+        const actual_name = getTagName(text, tag);
+        try std.testing.expectEqualStrings(expected_name, actual_name);
+    }
+}
+
+// pub fn getTagsThreaded(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
+//     // vectorized + threaded version of getTags
+//     const n_tags = countV(u32, text, '<');
+//
+//     var tags = try std.ArrayList(Tag).initCapacity(allo, n_tags);
+//     defer tags.deinit();
+//
+//     const N_THREADS = 8;
+//     inline for (0..N_THREADS) |i| {
+//         std.Thread.spawn(.{}, , args: anytype);
+//     }
+// }
