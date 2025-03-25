@@ -184,11 +184,10 @@ pub const TagType = enum {
     close,
 };
 
-pub fn countV(comptime T: type, text: []const u8, char: u8) T {
+pub fn countV(text: []const u8, char: u8) u32 {
     // assumes no intersections b/w quotes, only subsets (one pair of quotes w/in another) or independent (no overlap)
-    var n_found: T = 0;
-
-    const LEN: u32 = @truncate(text.len);
+    var n_found: u32 = 0;
+    const TEXT_LEN = text.len;
 
     const VECTOR_LENGTH: u32 = 64;
     const V: type = @Vector(VECTOR_LENGTH, u8);
@@ -200,8 +199,9 @@ pub fn countV(comptime T: type, text: []const u8, char: u8) T {
     var dquote_carry: bool = false;
 
     var i: u32 = 0;
-    while (i + VECTOR_LENGTH < LEN) : (i += VECTOR_LENGTH) {
-        const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
+    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
+        // const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
+        const data_vector: V = @as(V, text[i..TEXT_LEN][0..VECTOR_LENGTH].*);
 
         var matches = @as(u64, @bitCast(v == data_vector));
 
@@ -223,9 +223,9 @@ pub fn countV(comptime T: type, text: []const u8, char: u8) T {
         n_found += @popCount(matches);
     }
 
-    if (i != LEN) {
+    if (i != TEXT_LEN) {
         var data = [_]u8{0} ** VECTOR_LENGTH;
-        @memcpy(data[0 .. text.len - i], text[i..text.len]);
+        @memcpy(data[0 .. TEXT_LEN - i], text[i..TEXT_LEN]);
         const data_vector: V = @as(V, data);
 
         var matches = @as(u64, @bitCast(v == data_vector));
@@ -252,22 +252,19 @@ pub fn countV(comptime T: type, text: []const u8, char: u8) T {
 }
 
 test "Count Tags - Vectorized Version" {
-    const T: type = u16;
     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const n_open = countV(T, text, '<');
-    const n_close = countV(T, text, '>');
+    const n_open = countV(text, '<');
+    const n_close = countV(text, '>');
     try std.testing.expect(n_open == n_close);
     try std.testing.expect(n_open == 8);
 }
 
-pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
+pub fn getTagsV(tags: []Tag, text: []const u8, complete: *bool) !void {
     // Vectorized Version of get Tags
     // assumes no intersection b/w quotes - only subsets or independent quotes (i.e. '""' or ''"", no '"'")
     // assumes '<' precedes '>', all independent, no subsets (i.e. no <<>>, only <><>)
-    const n_tags = countV(u32, text, '<');
-    var tags = try std.ArrayList(Tag).initCapacity(allo, n_tags);
-
-    const LEN: u32 = @truncate(text.len);
+    // assumes memory pre-allocated by using countV for size
+    const TEXT_LEN = text.len;
 
     // vectors
     const VECTOR_LENGTH: u8 = 64;
@@ -285,7 +282,8 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
     var dquote_carry: bool = false;
 
     var i: u32 = 0;
-    while (i + VECTOR_LENGTH < LEN) : (i += VECTOR_LENGTH) {
+    var tag_index: u32 = 0;
+    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
         const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
 
         // matches are in bitreverse order already
@@ -317,11 +315,11 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
 
             const c_bit = @ctz(close_matches);
             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-            try tags.append(.{
+            tags[tag_index] = .{
                 .start = open_position,
                 .end = i + c_bit,
-            });
-
+            };
+            tag_index += 1;
             open_carry = false;
         }
 
@@ -333,10 +331,11 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
             open_matches = BitTricks.turnOffLastBit(u64, open_matches);
             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
 
-            try tags.append(.{
+            tags[tag_index] = .{
                 .start = i + o_bit,
                 .end = i + c_bit,
-            });
+            };
+            tag_index += 1;
         }
 
         if (open_matches > 0) {
@@ -345,9 +344,9 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
         }
     }
 
-    if (i != LEN) {
+    if (i != TEXT_LEN) {
         var data = [_]u8{0} ** VECTOR_LENGTH;
-        @memcpy(data[0 .. text.len - i], text[i..text.len]);
+        @memcpy(data[0 .. TEXT_LEN - i], text[i..TEXT_LEN]);
         const data_vector: V = @as(V, data);
 
         // matches are in bitreverse order already
@@ -377,10 +376,11 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
         if (open_carry) {
             const c_bit = @ctz(close_matches);
             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-            try tags.append(.{
+            tags[tag_index] = .{
                 .start = open_position,
                 .end = i + c_bit,
-            });
+            };
+            tag_index += 1;
 
             open_carry = false;
         }
@@ -393,14 +393,15 @@ pub fn getTagsV(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
             open_matches = BitTricks.turnOffLastBit(u64, open_matches);
             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
 
-            try tags.append(.{
+            tags[tag_index] = .{
                 .start = i + o_bit,
                 .end = i + c_bit,
-            });
+            };
+            tag_index += 1;
         }
     }
 
-    return tags;
+    complete.* = true;
 }
 
 test "Vectorized Get Tags" {
@@ -417,27 +418,68 @@ test "Vectorized Get Tags" {
         .{ .start = 72, .end = 78 },
         .{ .start = 79, .end = 87 },
     };
-    const tags = try getTagsV(allo, text);
-    defer tags.deinit();
+
+    const n_tags = countV(text, '<');
+    const tags: []Tag = try allo.alloc(Tag, n_tags);
+    defer allo.free(tags);
+
+    var is_complete: bool = false;
+    try getTagsV(tags, text, &is_complete);
 
     const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
 
-    for (tags.items, expected_tags, expected_names) |tag, expected_tag, expected_name| {
+    for (tags, expected_tags, expected_names) |tag, expected_tag, expected_name| {
         try std.testing.expectEqualDeep(expected_tag, tag);
         const actual_name = getTagName(text, tag);
         try std.testing.expectEqualStrings(expected_name, actual_name);
     }
 }
 
-// pub fn getTagsThreaded(allo: std.mem.Allocator, text: []const u8) !std.ArrayList(Tag) {
-//     // vectorized + threaded version of getTags
-//     const n_tags = countV(u32, text, '<');
-//
-//     var tags = try std.ArrayList(Tag).initCapacity(allo, n_tags);
-//     defer tags.deinit();
-//
-//     const N_THREADS = 8;
-//     inline for (0..N_THREADS) |i| {
-//         std.Thread.spawn(.{}, , args: anytype);
-//     }
-// }
+pub fn getTagsT(allo: std.mem.Allocator, text: []const u8) ![]Tag {
+    // Vectorized + Threaded version of getTags - supposed to be much faster on large datasets
+    // edges cases:
+    // 1. does step evenly divide into text - done
+    // 2. are there tags that open and close across groups
+    const N_THREADS: u8 = 8;
+
+    var n_tags = [_]u32{0} ** N_THREADS;
+    const step: u32 = @truncate(text.len / N_THREADS); // issue is if step evenly divides into
+    inline for (0..N_THREADS - 1) |i| {
+        const start = i * step;
+        n_tags[i] = countV(text[start .. start + step], '<');
+    }
+    n_tags[N_THREADS - 1] = countV(text[N_THREADS * step .. text.len], '<');
+
+    const TOTAL_TAGS: u32 = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
+    const tags = try allo.alloc(Tag, TOTAL_TAGS);
+
+    var is_threads_complete = [_]bool{false} ** N_THREADS;
+    var tag_index: u32 = 0;
+    inline for (0..N_THREADS) |i| {
+        const thread = try std.Thread.spawn(.{}, getTagsV, .{
+            tags[tag_index .. tag_index + n_tags[i]],
+            text,
+            &is_threads_complete[i],
+        });
+        defer thread.detach();
+        tag_index += n_tags[i];
+    }
+
+    const trues = @as(@Vector(N_THREADS, bool), @splat(true));
+    while (@reduce(.And, @as(@Vector(N_THREADS, bool), is_threads_complete) == trues)) {}
+
+    return tags;
+}
+
+test "Get Tags T" {
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const allo = std.testing.allocator;
+    const tags = try getTagsT(allo, text);
+    defer allo.free(tags);
+
+    const expected_tag_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
+    for (expected_tag_names, tags) |expected_tag_name, tag| {
+        const tag_name = getTagName(text, tag);
+        try std.testing.expectEqualStrings(expected_tag_name, tag_name);
+    }
+}
