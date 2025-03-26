@@ -1,25 +1,32 @@
 const std = @import("std");
 const Data = @import("Data.zig");
-const Tag = @import("Tags.zig");
+// const Tag = @import("Tags.zig");
 
 pub fn main() !void {
-    var da = std.heap.DebugAllocator(.{}){};
-    defer std.debug.assert(.ok == da.deinit());
-    const allo = da.allocator();
-
+    // var da = std.heap.DebugAllocator(.{}){};
+    // defer std.debug.assert(.ok == da.deinit());
+    // const allo = da.allocator();
+    //
     // const filename = "src/vk.xml";
-    // const filename = "src/vk_extern_struct.xml";
+    // // const filename = "src/vk_extern_struct.xml";
     // const data = try Data.init(allo, filename);
     // defer data.deinit();
+    //
+    // const start1 = std.time.nanoTimestamp();
+    // const n_tags = Tag.countV(data.data, '<');
+    // const tags1 = try allo.alloc(Tag, n_tags);
+    // var is_complete: bool = false;
+    // try Tag.getTagsV(tags1, data.data, &is_complete);
+    // const end1 = std.time.nanoTimestamp();
+    // allo.free(tags1);
+    // std.debug.print("Time: {}\n", .{end1 - start1});
 
-    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    std.debug.print("Length: {}\n", .{text.len});
-    const tags = try Tag.getTagsV(allo, text);
-    defer tags.deinit();
-    for (tags.items) |tag| {
-        std.debug.print("Tag: {}:{} ", .{ tag.start, tag.end });
-        std.debug.print("{s}\n", .{text[tag.start + 1 .. tag.end]});
-    }
+    // const start2 = std.time.nanoTimestamp();
+    // const tags2 = try Tag.getTagsT(12, allo, data.data);
+    // const end2 = std.time.nanoTimestamp();
+    // allo.free(tags2);
+
+    // std.debug.print("Time: {} vs {}\n", .{ end1 - start1, end2 - start2 });
 
     // const tags = try Tag.getTagsV(data);
     // defer tags.deinit();
@@ -182,5 +189,6 @@ pub fn main() !void {
 // Parse the data
 
 test "Basics" {
-    _ = @import("Tags.zig");
+    // _ = @import("Tags.zig");
+    _ = @import("Match.zig");
 }
