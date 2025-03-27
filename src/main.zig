@@ -3,15 +3,15 @@ const Data = @import("Data.zig");
 // const Tag = @import("Tags.zig");
 
 pub fn main() !void {
-    // var da = std.heap.DebugAllocator(.{}){};
-    // defer std.debug.assert(.ok == da.deinit());
-    // const allo = da.allocator();
-    //
+    var da = std.heap.DebugAllocator(.{}){};
+    defer std.debug.assert(.ok == da.deinit());
+    const allo = da.allocator();
+
     // const filename = "src/vk.xml";
-    // // const filename = "src/vk_extern_struct.xml";
-    // const data = try Data.init(allo, filename);
-    // defer data.deinit();
-    //
+    const filename = "src/vk_extern_struct.xml";
+    const data = try Data.init(allo, filename);
+    defer data.deinit();
+
     // const start1 = std.time.nanoTimestamp();
     // const n_tags = Tag.countV(data.data, '<');
     // const tags1 = try allo.alloc(Tag, n_tags);

@@ -2,7 +2,7 @@ const std = @import("std");
 const BitTricks = @import("BitTricks");
 const VECTOR_LENGTH: u8 = 64;
 
-const Carry = packed struct(u8) {
+pub const Carry = packed struct(u8) {
     single: bool = false,
     double: bool = false,
     backtick: bool = false,
@@ -127,4 +127,58 @@ test "bitIndexesOfTag with single and double quotes carries" {
             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
         }
     }
+}
+
+fn createCustomMatch(comptime match_symbols: []const u8) type {
+    return struct {
+        matches: [match_symbols.len]u64,
+        carry: Carry,
+    };
+}
+
+pub fn bitIndexesOf(text: []const u8, comptime match_symbols: []u8, carry: Carry) createCustomMatch(match_symbols) {
+    // Same as above except now you can choose what characters to match on - still skips quotes
+    std.debug.assert(text.len == VECTOR_LENGTH);
+
+    // vectors
+    const V: type = @Vector(VECTOR_LENGTH, u8);
+    const vectors: [match_symbols.len]V = undefined;
+    inline for (0..match_symbols.len) |i| {
+        match_symbols[i] = @splat(match_symbols[i]);
+    }
+
+    const s: V = @splat('\'');
+    const d: V = @splat('\"');
+    const b: V = @splat('`');
+
+    const data_vector: V = @as(V, text[0..VECTOR_LENGTH].*);
+
+    var matches: [match_symbols.len]u64 = undefined;
+    inline for (0..match_symbols.len) |i| {
+        matches[i] = @as(u64, @bitCast(vectors[i] == data_vector));
+    }
+
+    var carry_matches = [3]u64{
+        @as(u64, @bitCast(s == data_vector)),
+        @as(u64, @bitCast(d == data_vector)),
+        @as(u64, @bitCast(b == data_vector)),
+    };
+
+    var ret_carry = std.mem.zeroes(Carry);
+
+    inline for (0..carry_matches.len, comptime std.meta.fieldNames(Carry)[0..3]) |i, field_name| {
+        carry_matches[i], @field(ret_carry, field_name) = blk: {
+            const bt = BitTricks.turnOnBitsBWPairsOfBits(u64, .{ .mask = carry_matches[i], .carry = @field(carry, field_name) });
+            break :blk .{ bt.mask, bt.carry };
+        };
+
+        inline for (0..matches.len) |j| {
+            matches[j] &= ~carry_matches[i];
+        }
+    }
+
+    return .{
+        .matches = matches,
+        .carry = ret_carry,
+    };
 }

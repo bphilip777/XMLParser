@@ -1,5 +1,10 @@
 const std = @import("std");
 const Data = @import("Data.zig");
+
+const Carry = @import("Match.zig").Carry;
+const bitIndexesOfTag = @import("Match.zig").bitIndexesOfTag;
+const bitIndexesOf = @import("Match.zig").bitIndexesOf;
+
 const Tag = @This();
 const BitTricks = @import("BitTricks");
 const VECTOR_LENGTH: u8 = 64;
@@ -185,134 +190,43 @@ pub const TagType = enum {
     close,
 };
 
-fn findMatch(text: []const u8, squote_carry: bool, dquote_carry: bool) struct { open: u64, close: u64, squote_carry:bool, dquote_carry: bool, } {
-    std.debug.assert(text.len == VECTOR_LENGTH);
-
-    var sc = squote_carry;
-    var dc = dquote_carry;
-
-    // vectors
-    const V: type = @Vector(VECTOR_LENGTH, u8);
-    const o: V = @splat('<');
-    const c: V = @splat('>');
-    const s: V = @splat('\'');
-    const d: V = @splat('\"');
-
-    const data_vector: V = @as(V, text);
-
-    // matches are in bitreverse order already
-    var open_matches = @as(u64, @bitCast(o == data_vector));
-    var close_matches = @as(u64, @bitCast(c == data_vector));
-    var squote_matches = @as(u64, @bitCast(s == data_vector));
-    var dquote_matches = @as(u64, @bitCast(d == data_vector));
-
-    // turn quote matches into masks
-    squote_matches, sc = blk: {
-        const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-        break :blk .{ bt.mask, bt.carry };
-    };
-
-    dquote_matches, dc = blk: {
-        const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-        break :blk .{ bt.mask, bt.carry };
-    };
-
-    // remove matches within masks
-    open_matches &= ~squote_matches;
-    close_matches &= ~squote_matches;
-
-    open_matches &= ~dquote_matches;
-    close_matches &= ~dquote_matches;
-
-    return .{
-        .open_matches = open_matches,
-        .close_matches = close_matches,
-        .squote_carry = sc,
-        .dquote_carry = dc,
-    };
-}
-
-test "Match" {
-const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const matches = [_]Tag{.{.start=0, .end=}};
-    findMatch(text: []const u8, squote_carry: bool, dquote_carry: bool)
-        findMatch(text, false, false);
-}
-
-// pub fn countV(text: []const u8, char: u8) u32 {
-//     // assumes no intersections b/w quotes, only subsets (one pair of quotes w/in another) or independent (no overlap)
-//     var n_found: u32 = 0;
-//     const TEXT_LEN = text.len;
-//
-//     const V: type = @Vector(VECTOR_LENGTH, u8);
-//     const v: V = @splat(char);
-//     const s: V = @splat('\'');
-//     const d: V = @splat('\"');
-//
-//     var squote_carry: bool = false;
-//     var dquote_carry: bool = false;
-//
-//     var i: u32 = 0;
-//     while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-//         // const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
-//         const data_vector: V = @as(V, text[i..TEXT_LEN][0..VECTOR_LENGTH].*);
-//
-//         var matches = @as(u64, @bitCast(v == data_vector));
-//
-//         var squote_matches = @as(u64, @bitCast(data_vector == s));
-//         squote_matches, squote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         var dquote_matches = @as(u64, @bitCast(data_vector == d));
-//         dquote_matches, dquote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         matches &= ~squote_matches;
-//         matches &= ~dquote_matches;
-//
-//         n_found += @popCount(matches);
-//     }
-//
-//     if (i != TEXT_LEN) {
-//         var data = [_]u8{0} ** VECTOR_LENGTH;
-//         @memcpy(data[0 .. TEXT_LEN - i], text[i..TEXT_LEN]);
-//         const data_vector: V = @as(V, data);
-//
-//         var matches = @as(u64, @bitCast(v == data_vector));
-//
-//         var squote_matches = @as(u64, @bitCast(data_vector == s));
-//         squote_matches, squote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         var dquote_matches = @as(u64, @bitCast(data_vector == d));
-//         dquote_matches, dquote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         matches &= ~squote_matches;
-//         matches &= ~dquote_matches;
-//
-//         n_found += @popCount(matches);
-//     }
-//
-//     return n_found;
-// }
-//
-// test "Count Tags - Vectorized Version" {
+// test "Match" {
 //     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     const n_open = countV(text, '<');
-//     const n_close = countV(text, '>');
-//     try std.testing.expect(n_open == n_close);
-//     try std.testing.expect(n_open == 8);
+//     const bit_matches = bitIndexesOfTag(text, 0);
 // }
-//
+
+// not generic - made to count the # of tags inside a text
+pub fn countV(text: []const u8) u32 {
+    const TEXT_LEN: u32 = @truncate(text.len);
+    var n_tags: u32 = 0;
+
+    var i: u32 = 0;
+    var carry: Carry = 0;
+    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
+        const match = bitIndexesOf(text, "<", carry);
+        carry = match.carry;
+        n_tags += @popCount(match.open_matches);
+    }
+
+    if (i != TEXT_LEN) {
+        const text_data = [_]u8{0} ** VECTOR_LENGTH;
+        @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
+        const match = bitIndexesOfTag(text, carry);
+        carry = match.carry;
+        n_tags += @popCount(match.open_matches);
+    }
+
+    return n_tags;
+}
+
+test "Count Tags - Vectorized Version" {
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const n_open = countV(text, '<');
+    const n_close = countV(text, '>');
+    try std.testing.expect(n_open == n_close);
+    try std.testing.expect(n_open == 8);
+}
+
 // pub fn getTagsV(tags: []Tag, text: []const u8, complete: *bool) !void {
 //     // Vectorized Version of get Tags
 //     // assumes no intersection b/w quotes - only subsets or independent quotes (i.e. '""' or ''"", no '"'")
