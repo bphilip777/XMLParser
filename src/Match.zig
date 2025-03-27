@@ -1,6 +1,6 @@
 const std = @import("std");
 const BitTricks = @import("BitTricks");
-const VECTOR_LENGTH: u8 = 64;
+const VECTOR_LEN: u8 = 64;
 
 pub const Carry = packed struct(u8) {
     single: bool = false,
@@ -16,17 +16,17 @@ close_matches: u64,
 carry: Carry,
 
 pub fn bitIndexesOfTag(text: []const u8, carry: Carry) Match {
-    std.debug.assert(text.len == VECTOR_LENGTH);
+    std.debug.assert(text.len == VECTOR_LEN);
 
     // vectors
-    const V: type = @Vector(VECTOR_LENGTH, u8);
+    const V: type = @Vector(VECTOR_LEN, u8);
     const o: V = @splat('<');
     const c: V = @splat('>');
     const s: V = @splat('\'');
     const d: V = @splat('\"');
     const b: V = @splat('`');
 
-    const data_vector: V = @as(V, text[0..][0..VECTOR_LENGTH].*);
+    const data_vector: V = @as(V, text[0..][0..VECTOR_LEN].*);
 
     // matches are in bitreverse order - may be a problem
     var tag_matches = [_]u64{
@@ -62,7 +62,7 @@ pub fn bitIndexesOfTag(text: []const u8, carry: Carry) Match {
 
 test "Bit Indexes Of Tag" {
     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const matches = bitIndexesOfTag(text[0..VECTOR_LENGTH], std.mem.zeroes(Carry));
+    const matches = bitIndexesOfTag(text[0..VECTOR_LEN], std.mem.zeroes(Carry));
 
     var open_matches: u64 = matches.open_matches;
     var close_matches: u64 = matches.close_matches;
@@ -110,7 +110,7 @@ test "bitIndexesOfTag with single and double quotes carries" {
         const carry = carries[j];
         const expected_tag_names = all_expected_tag_names[j];
 
-        const matches = bitIndexesOfTag(text[0..VECTOR_LENGTH], carry);
+        const matches = bitIndexesOfTag(text[0..VECTOR_LEN], carry);
 
         try std.testing.expect(carry == carries[j]);
 
@@ -136,17 +136,17 @@ const CustomMatch = struct {
 
 pub fn bitIndexesOfScalar(text: []const u8, comptime match_symbol: u8, carry: Carry) CustomMatch {
     // Same as above except now you can choose what characters to match on - still skips quotes
-    std.debug.assert(text.len == VECTOR_LENGTH);
+    std.debug.assert(text.len == VECTOR_LEN);
 
     // vectors
-    const V: type = @Vector(VECTOR_LENGTH, u8);
+    const V: type = @Vector(VECTOR_LEN, u8);
     const match_vector: V = @splat(match_symbol);
 
     const s: V = @splat('\'');
     const d: V = @splat('\"');
     const b: V = @splat('`');
 
-    const data_vector: V = @as(V, text[0..VECTOR_LENGTH].*);
+    const data_vector: V = @as(V, text[0..VECTOR_LEN].*);
 
     var matches = @as(u64, @bitCast(match_vector == data_vector));
 

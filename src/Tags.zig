@@ -7,7 +7,9 @@ const bitIndexesOfScalar = @import("Match.zig").bitIndexesOfScalar;
 
 const Tag = @This();
 const BitTricks = @import("BitTricks");
-const VECTOR_LENGTH: u8 = 64;
+const VECTOR_LEN: u8 = 64;
+
+const N_THREADS = std.Thread.getCpuCount() catch 4;
 
 start: u32,
 end: u32,
@@ -196,16 +198,18 @@ pub fn countTagsV(text: []const u8) u32 {
 
     var i: u32 = 0;
     var carry = std.mem.zeroes(Carry);
-    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-        const match = bitIndexesOfTag(text, carry);
+    while (i + VECTOR_LEN < TEXT_LEN) : (i += VECTOR_LEN) {
+        const match = bitIndexesOfTag(text[i .. i + VECTOR_LEN], carry);
         carry = match.carry;
         n_tags += @popCount(match.open_matches);
     }
 
     if (i != TEXT_LEN) {
-        var text_data = [_]u8{0} ** VECTOR_LENGTH;
+        var text_data: [VECTOR_LEN]u8 = undefined;
         @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
-        const match = bitIndexesOfTag(text, carry);
+        @memset(text_data[text.len - i .. VECTOR_LEN], 0);
+
+        const match = bitIndexesOfTag(&text_data, carry);
         carry = match.carry;
         n_tags += @popCount(match.open_matches);
     }
@@ -219,18 +223,18 @@ pub fn countScalarV(text: []const u8, comptime char: u8) u32 {
 
     var i: u32 = 0;
     var carry = std.mem.zeroes(Carry);
-    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-        const match = bitIndexesOfScalar(text, char, carry);
+    while (i + VECTOR_LEN < TEXT_LEN) : (i += VECTOR_LEN) {
+        const match = bitIndexesOfScalar(text[i .. i + VECTOR_LEN], char, carry);
         carry = match.carry;
         n_tags += @popCount(match.matches);
     }
 
     if (i != TEXT_LEN) {
-        var text_data: [VECTOR_LENGTH]u8 = undefined;
+        var text_data: [VECTOR_LEN]u8 = undefined;
         @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
-        @memset(text_data[text.len - i .. VECTOR_LENGTH], 0);
+        @memset(text_data[text.len - i .. VECTOR_LEN], 0);
 
-        const match = bitIndexesOfScalar(text, char, carry);
+        const match = bitIndexesOfScalar(&text_data, char, carry);
         carry = match.carry;
         n_tags += @popCount(match.matches);
     }
@@ -250,41 +254,98 @@ test "Count Chars - Vectorized Version" {
     try std.testing.expect(n_tags == n_open);
 }
 
-// TODO:
-// getTagsV
-// getTagsT
-//
+pub fn getTagsV(text: []const u8, tags: []Tag, is_complete: *bool) void {
+    std.debug.assert(tags.len < std.math.maxInt(u32));
+    const TEXT_LEN: u32 = @truncate(text.len);
 
-// test "Vectorized Get Tags" {
-//     const allo = std.testing.allocator;
-//     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//
-//     const expected_tags = [8]Tag{
-//         .{ .start = 0, .end = 7 },
-//         .{ .start = 8, .end = 14 },
-//         .{ .start = 26, .end = 33 },
-//         .{ .start = 34, .end = 39 },
-//         .{ .start = 44, .end = 50 },
-//         .{ .start = 51, .end = 56 },
-//         .{ .start = 72, .end = 78 },
-//         .{ .start = 79, .end = 87 },
-//     };
-//
-//     const n_tags = countV(text, '<');
-//     const tags: []Tag = try allo.alloc(Tag, n_tags);
-//     defer allo.free(tags);
-//
-//     var is_complete: bool = false;
-//     try getTagsV(tags, text, &is_complete);
-//
-//     const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
-//
-//     for (tags, expected_tags, expected_names) |tag, expected_tag, expected_name| {
-//         try std.testing.expectEqualDeep(expected_tag, tag);
-//         const actual_name = getTagName(text, tag);
-//         try std.testing.expectEqualStrings(expected_name, actual_name);
-//     }
-// }
+    var i: u32 = 0;
+    var carry: Carry = std.mem.zeroes(Carry);
+    var tag_idx: u32 = 0;
+
+    while (i + VECTOR_LEN < TEXT_LEN) : (i += VECTOR_LEN) {
+        const match = bitIndexesOfTag(text[i .. i + VECTOR_LEN], carry);
+        var open_matches = match.open_matches;
+        var close_matches = match.close_matches;
+        carry = match.carry;
+
+        while (close_matches > 0) : (tag_idx += 1) {
+            const open_bit = @ctz(open_matches);
+            const close_bit = @ctz(close_matches);
+
+            open_matches = BitTricks.turnOffLastBit(u64, open_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+
+            tags[tag_idx] = Tag{
+                .start = i + open_bit,
+                .end = i + close_bit,
+            };
+        }
+    }
+
+    if (i != TEXT_LEN) {
+        var text_data: [VECTOR_LEN]u8 = undefined;
+        @memcpy(text_data[0 .. TEXT_LEN - i], text[i..text.len]);
+        @memset(text_data[TEXT_LEN - i .. VECTOR_LEN], 0);
+
+        const match = bitIndexesOfTag(&text_data, carry);
+        var open_matches = match.open_matches;
+        var close_matches = match.close_matches;
+        carry = match.carry;
+
+        while (close_matches > 0) : (tag_idx += 1) {
+            const open_bit = @ctz(open_matches);
+            const close_bit = @ctz(close_matches);
+
+            open_matches = BitTricks.turnOffLastBit(u64, open_matches);
+            close_matches = BitTricks.turnOffLastBit(u64, close_matches);
+
+            tags[tag_idx] = Tag{
+                .start = i + open_bit,
+                .end = i + close_bit,
+            };
+        }
+    }
+
+    is_complete.* = true;
+}
+
+test "Vectorized Get Tags" {
+    const allo = std.testing.allocator;
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+
+    const expected_tags = [8]Tag{
+        .{ .start = 0, .end = 7 },
+        .{ .start = 8, .end = 14 },
+        .{ .start = 26, .end = 33 },
+        .{ .start = 34, .end = 39 },
+        .{ .start = 44, .end = 50 },
+        .{ .start = 51, .end = 56 },
+        .{ .start = 72, .end = 78 },
+        .{ .start = 79, .end = 87 },
+    };
+
+    const n_tags = countTagsV(text);
+    try std.testing.expectEqual(n_tags, expected_tags.len);
+
+    const tags = try allo.alloc(Tag, n_tags);
+    defer allo.free(tags);
+    var is_complete = false;
+    getTagsV(text, tags, &is_complete);
+
+    const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
+
+    for (tags, expected_tags, expected_names) |tag, expected_tag, expected_name| {
+        try std.testing.expectEqualDeep(expected_tag, tag);
+        const actual_name = getTagName(text, tag);
+        try std.testing.expectEqualStrings(expected_name, actual_name);
+    }
+}
+
+pub fn getTagsT(allo: std.mem.Allocator, text: []const u8) ![]Tag {
+    var is_threads_complete = std.StaticBitSet(32);
+
+    inline for (0..) |i| {}
+}
 
 // test "Get Tags T" {
 //     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
