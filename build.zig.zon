@@ -37,8 +37,8 @@
     // internet connectivity.
     .dependencies = .{
         .BitTricks = .{
-            .url = "git+https://github.com/bphilip777/BitTricks.git#ad5d1065405db82e5e554e49385bcb6420b0320e",
-            .hash = "BitTricks-0.0.0-nTotJlBTAAAOaxuq5T_xsEBWjmP05_Xqbm3tMrsrOkXb",
+            .url = "git+https://github.com/bphilip777/BitTricks.git#b601c5429a3cc5a34807a575ffc20597d159e2a3",
+            .hash = "BitTricks-0.0.0-nTotJpxTAADxNLQfpccxX9V1toESryg4c5SHMuft6y5W",
         },
     },
     .paths = .{
