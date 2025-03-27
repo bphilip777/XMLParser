@@ -189,6 +189,6 @@ pub fn main() !void {
 // Parse the data
 
 test "Basics" {
-    // _ = @import("Tags.zig");
+    _ = @import("Tags.zig");
     _ = @import("Match.zig");
 }

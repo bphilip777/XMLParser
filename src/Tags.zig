@@ -3,7 +3,7 @@ const Data = @import("Data.zig");
 
 const Carry = @import("Match.zig").Carry;
 const bitIndexesOfTag = @import("Match.zig").bitIndexesOfTag;
-const bitIndexesOf = @import("Match.zig").bitIndexesOf;
+const bitIndexesOfScalar = @import("Match.zig").bitIndexesOfScalar;
 
 const Tag = @This();
 const BitTricks = @import("BitTricks");
@@ -190,26 +190,20 @@ pub const TagType = enum {
     close,
 };
 
-// test "Match" {
-//     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     const bit_matches = bitIndexesOfTag(text, 0);
-// }
-
-// not generic - made to count the # of tags inside a text
-pub fn countV(text: []const u8) u32 {
+pub fn countTagsV(text: []const u8) u32 {
     const TEXT_LEN: u32 = @truncate(text.len);
     var n_tags: u32 = 0;
 
     var i: u32 = 0;
-    var carry: Carry = 0;
+    var carry = std.mem.zeroes(Carry);
     while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-        const match = bitIndexesOf(text, "<", carry);
+        const match = bitIndexesOfTag(text, carry);
         carry = match.carry;
         n_tags += @popCount(match.open_matches);
     }
 
     if (i != TEXT_LEN) {
-        const text_data = [_]u8{0} ** VECTOR_LENGTH;
+        var text_data = [_]u8{0} ** VECTOR_LENGTH;
         @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
         const match = bitIndexesOfTag(text, carry);
         carry = match.carry;
@@ -219,227 +213,48 @@ pub fn countV(text: []const u8) u32 {
     return n_tags;
 }
 
-test "Count Tags - Vectorized Version" {
-    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const n_open = countV(text, '<');
-    const n_close = countV(text, '>');
-    try std.testing.expect(n_open == n_close);
-    try std.testing.expect(n_open == 8);
+pub fn countScalarV(text: []const u8, comptime char: u8) u32 {
+    const TEXT_LEN: u32 = @truncate(text.len);
+    var n_tags: u32 = 0;
+
+    var i: u32 = 0;
+    var carry = std.mem.zeroes(Carry);
+    while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
+        const match = bitIndexesOfScalar(text, char, carry);
+        carry = match.carry;
+        n_tags += @popCount(match.matches);
+    }
+
+    if (i != TEXT_LEN) {
+        var text_data: [VECTOR_LENGTH]u8 = undefined;
+        @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
+        @memset(text_data[text.len - i .. VECTOR_LENGTH], 0);
+
+        const match = bitIndexesOfScalar(text, char, carry);
+        carry = match.carry;
+        n_tags += @popCount(match.matches);
+    }
+
+    return n_tags;
 }
 
-// pub fn getTagsV(tags: []Tag, text: []const u8, complete: *bool) !void {
-//     // Vectorized Version of get Tags
-//     // assumes no intersection b/w quotes - only subsets or independent quotes (i.e. '""' or ''"", no '"'")
-//     // assumes '<' precedes '>', all independent, no subsets (i.e. no <<>>, only <><>)
-//     // assumes memory pre-allocated by using countV for size
-//     const TEXT_LEN = text.len;
+test "Count Chars - Vectorized Version" {
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+
+    const n_tags = countTagsV(text);
+    const n_open = countScalarV(text, '<');
+    const n_close = countScalarV(text, '>');
+
+    try std.testing.expect(n_open == n_close);
+    try std.testing.expect(n_open == 8);
+    try std.testing.expect(n_tags == n_open);
+}
+
+// TODO:
+// getTagsV
+// getTagsT
 //
-//     // flags
-//     var open_carry: bool = false;
-//     var open_position: u32 = 0;
-//
-//     var squote_carry: bool = false;
-//     var dquote_carry: bool = false;
-//
-//     var i: u32 = 0;
-//     var tag_idx: u32 = 0;
-//
-//     // first match - b/c of threads could have a close before an open
-//     while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-//         const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
-//
-//         // matches are in bitreverse order already
-//         var open_matches = @as(u64, @bitCast(o == data_vector));
-//         var close_matches = @as(u64, @bitCast(c == data_vector));
-//         var squote_matches = @as(u64, @bitCast(s == data_vector));
-//         var dquote_matches = @as(u64, @bitCast(d == data_vector));
-//
-//         // turn quote matches into masks
-//         squote_matches, squote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         dquote_matches, dquote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         // remove matches within masks
-//         open_matches &= ~squote_matches;
-//         close_matches &= ~squote_matches;
-//
-//         open_matches &= ~dquote_matches;
-//         close_matches &= ~dquote_matches;
-//
-//         // no matches = skip
-//         if (close_matches == 0 and open_matches == 0) continue;
-//
-//         // on first match, open idx must be smaller than close idx for threaded version
-//         if (@ctz(close_matches) < @ctz(open_matches)) {
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//         }
-//
-//         while (close_matches > 0) {
-//             const o_bit = @ctz(open_matches);
-//             const c_bit = @ctz(close_matches);
-//
-//             open_matches = BitTricks.turnOffLastBit(u64, open_matches);
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//
-//             tags[tag_idx] = .{
-//                 .start = i + o_bit,
-//                 .end = i + c_bit,
-//             };
-//             tag_idx += 1;
-//         }
-//
-//         break;
-//     }
-//
-//     // normal loop
-//     while (i + VECTOR_LENGTH < TEXT_LEN) : (i += VECTOR_LENGTH) {
-//         const data_vector: V = @as(V, text[i..][0..VECTOR_LENGTH].*);
-//
-//         // matches are in bitreverse order already
-//         var open_matches = @as(u64, @bitCast(o == data_vector));
-//         var close_matches = @as(u64, @bitCast(c == data_vector));
-//         var squote_matches = @as(u64, @bitCast(s == data_vector));
-//         var dquote_matches = @as(u64, @bitCast(d == data_vector));
-//
-//         // turn quote matches into masks
-//         squote_matches, squote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         dquote_matches, dquote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         // remove matches within masks
-//         open_matches &= ~squote_matches;
-//         close_matches &= ~squote_matches;
-//
-//         open_matches &= ~dquote_matches;
-//         close_matches &= ~dquote_matches;
-//
-//         // carrying a match across loops
-//         if (open_carry) {
-//             if (close_matches == 0) continue;
-//
-//             const c_bit = @ctz(close_matches);
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//             tags[tag_idx] = .{
-//                 .start = open_position,
-//                 .end = i + c_bit,
-//             };
-//
-//             tag_idx += 1;
-//             open_carry = false;
-//             open_position = undefined;
-//         }
-//
-//         // assume all open matches precede close matches + no open carry + no intersections of open and close carries
-//         while (close_matches > 0) {
-//             const o_bit = @ctz(open_matches);
-//             const c_bit = @ctz(close_matches);
-//
-//             open_matches = BitTricks.turnOffLastBit(u64, open_matches);
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//
-//             tags[tag_idx] = .{
-//                 .start = i + o_bit,
-//                 .end = i + c_bit,
-//             };
-//             tag_idx += 1;
-//         }
-//
-//         if (open_matches > 0) {
-//             open_carry = true;
-//             open_position = i + @ctz(open_matches);
-//         }
-//     }
-//
-//     if (i != TEXT_LEN) {
-//         var data = [_]u8{0} ** VECTOR_LENGTH;
-//         @memcpy(data[0 .. TEXT_LEN - i], text[i..TEXT_LEN]);
-//         const data_vector: V = @as(V, data);
-//
-//         // matches are in bitreverse order already
-//         var open_matches = @as(u64, @bitCast(o == data_vector));
-//         var close_matches = @as(u64, @bitCast(c == data_vector));
-//         var squote_matches = @as(u64, @bitCast(s == data_vector));
-//         var dquote_matches = @as(u64, @bitCast(d == data_vector));
-//
-//         // turn quote matches into masks
-//         squote_matches, squote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, squote_matches, squote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         dquote_matches, dquote_carry = blk: {
-//             const bt = BitTricks.turnOnBitsBW2Bits(u64, dquote_matches, dquote_carry);
-//             break :blk .{ bt.mask, bt.carry };
-//         };
-//
-//         // remove matches within masks
-//         open_matches &= ~squote_matches;
-//         close_matches &= ~squote_matches;
-//
-//         open_matches &= ~dquote_matches;
-//         close_matches &= ~dquote_matches;
-//
-//         if (open_carry) {
-//             if (close_matches == 0) {
-//                 tags[tag_idx] = .{
-//                     .start = open_position,
-//                     .end = undefined,
-//                 };
-//                 return;
-//             }
-//
-//             const c_bit = @ctz(close_matches);
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//             tags[tag_idx] = .{
-//                 .start = open_position,
-//                 .end = i + c_bit,
-//             };
-//
-//             tag_idx += 1;
-//             open_carry = false;
-//             open_position = undefined;
-//         }
-//
-//         // assume all open matches precede close matches + no open carry + no intersections of open and close carries
-//         while (close_matches > 0) {
-//             const o_bit = @ctz(open_matches);
-//             const c_bit = @ctz(close_matches);
-//
-//             open_matches = BitTricks.turnOffLastBit(u64, open_matches);
-//             close_matches = BitTricks.turnOffLastBit(u64, close_matches);
-//
-//             tags[tag_idx] = .{
-//                 .start = i + o_bit,
-//                 .end = i + c_bit,
-//             };
-//             tag_idx += 1;
-//         }
-//
-//         // illegal behavior if single thread looping through entire text
-//         // allowable behavior if multi-threaded looping through partitioned text - caught outside this fn in getTagsT
-//         if (open_matches > 0) {
-//             tags[tag_idx] = .{
-//                 .start = i + @ctz(open_matches),
-//                 .end = undefined,
-//             };
-//         }
-//     }
-//
-//     complete.* = true;
-// }
-//
+
 // test "Vectorized Get Tags" {
 //     const allo = std.testing.allocator;
 //     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
@@ -470,110 +285,7 @@ test "Count Tags - Vectorized Version" {
 //         try std.testing.expectEqualStrings(expected_name, actual_name);
 //     }
 // }
-//
-// pub fn getTagsT(comptime N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) ![]Tag {
-//     // Vectorized + Threaded version of getTags
-//     // Assumptions:
-//     // 1. Distance b/w tag open + tag close < section length
-//     // - Section Length = text.len / # of threads
-//     // - tags can open and close w/in a section
-//     // - tags can span across 1 section
-//     // 2. Text split evenly into sections except for last section (goes to text length)
-//     // - # of threads <= 2 * # of characters in text
-//     // 3. Equal # of tag opens and closes
-//     // - Illegal behavior otherwise
-//     // 4. Every close tag is preceded by an open tag
-//     // 5. Tags do not intersect nor subset - are independent
-//     // - <><> = Valid
-//     // - <<>> = subset = illegal behavior
-//     // - <_1 <_2 >_1 >_2 = intersect = illegal behavior
-//     // 6. Total # of Tags < std.math.maxInt(u32)
-//     // 7. Memory available to store total # of tags
-//
-//     if (N_THREADS == 0 or N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
-//     if (!(N_THREADS <= text.len * 2)) return error.MoreThreadsThanCharactersInText;
-//
-//     const step: u32 = @truncate(text.len / N_THREADS);
-//     var n_opens = [_]u32{0} ** N_THREADS;
-//     var n_closes = [_]u32{0} ** N_THREADS;
-//     var is_spanning_sections = [_]bool{false} ** N_THREADS;
-//
-//     inline for (0..N_THREADS) |i| {
-//         const start = i * step;
-//         const end = if (i == N_THREADS - 1) text.len else start + step;
-//
-//         n_opens[i] = countV(text[start..end], '<');
-//         n_closes[i] = countV(text[start..end], '>');
-//
-//         std.debug.assert(!(n_opens[i] == n_closes[i] and n_opens[i] == 0));
-//
-//         const last_open_idx = std.mem.lastIndexOfScalar(u8, text[start..end], '<') orelse start;
-//         const last_close_idx = std.mem.lastIndexOfScalar(u8, text[start..end], '>') orelse start;
-//         is_spanning_sections[i] = last_open_idx > last_close_idx;
-//     }
-//
-//     // Make sure each thread has tags within it - otherwise parsing may break
-//     inline for (n_opens) |n_open| {
-//         std.debug.assert(n_open != 0);
-//     }
-//
-//     const TOTAL_TAGS: u32 = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_opens));
-//     const tags = try allo.alloc(Tag, TOTAL_TAGS);
-//
-//     var is_thread_complete = [_]bool{false} ** N_THREADS;
-//
-//     var tag_idx: u32 = 0;
-//     for (0..N_THREADS) |i| {
-//         const start = i * step;
-//         const end = if (i == N_THREADS - 1) text.len else start + step;
-//
-//         const thread = try std.Thread.spawn(.{}, getTagsV, .{
-//             tags[tag_idx .. tag_idx + n_opens[i]],
-//             text[start..end],
-//             &is_thread_complete[i],
-//         });
-//         defer thread.detach();
-//
-//         tag_idx += n_opens[i];
-//     }
-//
-//     const trues = @as(@Vector(N_THREADS, bool), @splat(true));
-//     while (true) {
-//         const all_complete = @as(@Vector(N_THREADS, bool), is_thread_complete);
-//         if (@reduce(.And, all_complete == trues)) break;
-//     }
-//
-//     // Fix tags spanning sections
-//     tag_idx = 0;
-//     for (0..N_THREADS - 1) |i| {
-//         const iss = is_spanning_sections[i];
-//         if (!iss) continue;
-//
-//         const n_open = n_opens[i];
-//         const start = (i + 1) * step;
-//         const end = if (i == N_THREADS - 2) text.len else start + step;
-//         tag_idx += n_open;
-//         tags[tag_idx].end = @truncate(std.mem.indexOfScalar(u8, text[start..end], '>') orelse unreachable);
-//     }
-//
-//     // Adjust tags based on section
-//     var tags_start: u32 = 0;
-//     var tags_end: u32 = 0;
-//     for (0..N_THREADS) |i| {
-//         const section_start: u32 = @truncate(i * step);
-//         tags_end += n_opens[i];
-//
-//         for (tags_start..tags_end) |j| {
-//             tags[j].start += section_start;
-//             tags[j].end += section_start;
-//         }
-//
-//         tags_start += n_opens[i];
-//     }
-//
-//     return tags;
-// }
-//
+
 // test "Get Tags T" {
 //     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
 //     const allo = std.testing.allocator;

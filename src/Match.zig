@@ -129,23 +129,18 @@ test "bitIndexesOfTag with single and double quotes carries" {
     }
 }
 
-fn createCustomMatch(comptime match_symbols: []const u8) type {
-    return struct {
-        matches: [match_symbols.len]u64,
-        carry: Carry,
-    };
-}
+const CustomMatch = struct {
+    matches: u64,
+    carry: Carry,
+};
 
-pub fn bitIndexesOf(text: []const u8, comptime match_symbols: []u8, carry: Carry) createCustomMatch(match_symbols) {
+pub fn bitIndexesOfScalar(text: []const u8, comptime match_symbol: u8, carry: Carry) CustomMatch {
     // Same as above except now you can choose what characters to match on - still skips quotes
     std.debug.assert(text.len == VECTOR_LENGTH);
 
     // vectors
     const V: type = @Vector(VECTOR_LENGTH, u8);
-    const vectors: [match_symbols.len]V = undefined;
-    inline for (0..match_symbols.len) |i| {
-        match_symbols[i] = @splat(match_symbols[i]);
-    }
+    const match_vector: V = @splat(match_symbol);
 
     const s: V = @splat('\'');
     const d: V = @splat('\"');
@@ -153,10 +148,7 @@ pub fn bitIndexesOf(text: []const u8, comptime match_symbols: []u8, carry: Carry
 
     const data_vector: V = @as(V, text[0..VECTOR_LENGTH].*);
 
-    var matches: [match_symbols.len]u64 = undefined;
-    inline for (0..match_symbols.len) |i| {
-        matches[i] = @as(u64, @bitCast(vectors[i] == data_vector));
-    }
+    var matches = @as(u64, @bitCast(match_vector == data_vector));
 
     var carry_matches = [3]u64{
         @as(u64, @bitCast(s == data_vector)),
@@ -172,9 +164,7 @@ pub fn bitIndexesOf(text: []const u8, comptime match_symbols: []u8, carry: Carry
             break :blk .{ bt.mask, bt.carry };
         };
 
-        inline for (0..matches.len) |j| {
-            matches[j] &= ~carry_matches[i];
-        }
+        matches &= ~carry_matches[i];
     }
 
     return .{
