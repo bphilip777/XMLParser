@@ -9,8 +9,6 @@ const Tag = @This();
 const BitTricks = @import("BitTricks");
 const VECTOR_LEN: u8 = 64;
 
-const N_THREADS = std.Thread.getCpuCount() catch 4;
-
 start: u32,
 end: u32,
 
@@ -192,7 +190,7 @@ pub const TagType = enum {
     close,
 };
 
-pub fn countTagsV(text: []const u8) u32 {
+pub fn countTagsV(text: []const u8, num_tags: *u32) void {
     const TEXT_LEN: u32 = @truncate(text.len);
     var n_tags: u32 = 0;
 
@@ -214,7 +212,7 @@ pub fn countTagsV(text: []const u8) u32 {
         n_tags += @popCount(match.open_matches);
     }
 
-    return n_tags;
+    num_tags.* = n_tags;
 }
 
 pub fn countScalarV(text: []const u8, comptime char: u8) u32 {
@@ -254,7 +252,7 @@ test "Count Chars - Vectorized Version" {
     try std.testing.expect(n_tags == n_open);
 }
 
-pub fn getTagsV(text: []const u8, tags: []Tag, is_complete: *bool) void {
+pub fn getTagsV(text: []const u8, tags: []Tag) void {
     std.debug.assert(tags.len < std.math.maxInt(u32));
     const TEXT_LEN: u32 = @truncate(text.len);
 
@@ -305,8 +303,6 @@ pub fn getTagsV(text: []const u8, tags: []Tag, is_complete: *bool) void {
             };
         }
     }
-
-    is_complete.* = true;
 }
 
 test "Vectorized Get Tags" {
@@ -341,55 +337,100 @@ test "Vectorized Get Tags" {
     }
 }
 
-pub fn getTagsT(allo: std.mem.Allocator, text: []const u8) ![]Tag {
-    var is_threads_complete = std.StaticBitSet(32);
+pub fn getTagsT(allo: std.mem.Allocator, text: []const u8) !void { // []Tag {
+    const N_THREADS: u8 = 12;
+    const step = text.len / N_THREADS;
+    var is_complete = [_]bool{false} ** N_THREADS;
 
-    inline for (0..) |i| {}
+    const n_tags = blk: {
+        var n_tags = [_]u32{0} ** N_THREADS;
+        var i: u8 = 0;
+
+        inline while (i < N_THREADS) : (i += 1) {
+            const start = i * step;
+            const end = if (i == N_THREADS - 1) text.len else start + step;
+
+            std.Thread.spawn(.{}, countTagsV, .{text[start..end]});
+            n_tags[i] = countTagsV(text[start..end]);
+        }
+        break :blk n_tags;
+    };
+
+    const total_tags = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
+
+    const tags = try allo.alloc(Tag, total_tags);
+    defer allo.free(tags);
+
+    var is_thread_complete = [_]bool{false} ** N_THREADS;
+
+    var i: u8 = 0;
+    var tag_start: u32 = 0;
+    inline while (i < N_THREADS) : ({
+        i += 1;
+        tag_start += n_tags[i];
+    }) {
+        const start = i * step;
+        const end = if (i == N_THREADS - 1) text.len else start + step;
+
+        getTagsV(text[start..end], tags[tag_start .. tag_start + n_tags[i]], &is_thread_complete[i]);
+    }
+
+    // i = 0;
+    // inline while (i < N_THREADS) : (i += 1) {
+    //     const start = i * step;
+    //     const end = if (i == N_THREADS - 1) text.len else start + step;
+    //
+    //     getTagsV(text[start..end], , );
+    // }
+
+    // return tags;
 }
 
-// test "Get Tags T" {
-//     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     const allo = std.testing.allocator;
-//     // getTagsT(1, allo, text);
-//
-//     const expected_tags = [_]Tag{
-//         .{ .start = 0, .end = 7 },
-//         .{ .start = 8, .end = 14 },
-//         .{ .start = 26, .end = 33 },
-//         .{ .start = 34, .end = 39 },
-//         .{ .start = 44, .end = 50 },
-//         .{ .start = 51, .end = 56 },
-//         .{ .start = 72, .end = 78 },
-//         .{ .start = 79, .end = 87 },
-//     };
-//
-//     const expected_tag_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
-//
-//     { // single thread works
-//         const tags = try getTagsT(1, allo, text);
-//         defer allo.free(tags);
-//
-//         for (expected_tags, tags) |expected_tag, tag| {
-//             try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
-//         }
-//
-//         for (expected_tag_names, tags) |expected_tag_name, tag| {
-//             const tag_name = getTagName(text, tag);
-//             try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-//         }
-//     }
-//
-//     { // Multiple Threads
-//         const tags = try getTagsT(2, allo, text);
-//         defer allo.free(tags);
-//
-//         for (expected_tags, tags) |expected_tag, tag| {
-//             try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
-//         }
-//
-//         for (expected_tag_names, tags) |expected_tag_name, tag| {
-//             const tag_name = getTagName(text, tag);
-//             try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-//         }
-//     }
-// }
+test "Get Tags T" {
+    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    const allo = std.testing.allocator;
+    // getTagsT(1, allo, text);
+
+    // const expected_tags = [_]Tag{
+    //     .{ .start = 0, .end = 7 },
+    //     .{ .start = 8, .end = 14 },
+    //     .{ .start = 26, .end = 33 },
+    //     .{ .start = 34, .end = 39 },
+    //     .{ .start = 44, .end = 50 },
+    //     .{ .start = 51, .end = 56 },
+    //     .{ .start = 72, .end = 78 },
+    //     .{ .start = 79, .end = 87 },
+    // };
+
+    // const expected_tag_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
+
+    { // single thread works
+        try getTagsT(allo, text);
+        // const tags = try getTagsT(allo, text);
+        // defer allo.free(tags);
+
+        // for (expected_tags, tags) |expected_tag, tag| {
+        //     try std.testing.expectEqual(tag.start, expected_tag.start);
+        //     try std.testing.expectEqual(tag.end, expected_tag.end);
+        // }
+        //
+        // for (expected_tag_names, tags) |expected_tag_name, tag| {
+        //     const tag_name = getTagName(text, tag);
+        //     try std.testing.expectEqualStrings(expected_tag_name, tag_name);
+        // }
+    }
+
+    // { // Multiple Threads
+    //     const tags = try getTagsT(2, allo, text);
+    //     defer allo.free(tags);
+    //
+    //     for (expected_tags, tags) |expected_tag, tag| {
+    //         try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
+    //     }
+    //
+    //     for (expected_tag_names, tags) |expected_tag_name, tag| {
+    //         const tag_name = getTagName(text, tag);
+    //         try std.testing.expectEqualStrings(expected_tag_name, tag_name);
+    //     }
+    // }
+}
