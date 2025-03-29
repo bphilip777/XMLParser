@@ -353,34 +353,43 @@ fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool, start: u32
 }
 
 pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []const u8) ![]Tag {
-    if (N_THREADS > 12 or N_THREADS == 0) @compileError("Incompatible # of tags.");
-    const text_step = text.len / N_THREADS;
+    if (N_THREADS > 12 or N_THREADS == 0) @compileError("1 <= # of Threads <= 12");
+    std.debug.assert(text.len > 0);
+
+    const MIN_CHUNK_SIZE: u8 = 64;
+    const n_chunks = @max(text.len / MIN_CHUNK_SIZE, 1);
+
+    const n_iters = @min(n_chunks, N_THREADS);
+    const text_step = if (n_chunks < N_THREADS) MIN_CHUNK_SIZE else text.len / N_THREADS;
     var text_start: usize = 0;
 
     var is_complete = [_]bool{false} ** N_THREADS;
+    if (n_chunks < N_THREADS) {
+        for (n_chunks..N_THREADS) |i| is_complete[i] = true;
+    }
     const trues: @Vector(N_THREADS, bool) = @splat(true);
     var threads: [N_THREADS]std.Thread = undefined;
 
     const n_tags: [N_THREADS]u32 = blk: {
         var n_tags = [_]u32{0} ** N_THREADS;
 
-        inline for (0..N_THREADS - 1) |i| {
+        inline for (0..n_iters - 1) |i| {
             threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
                 text[text_start .. text_start + text_step],
                 &n_tags[i],
                 &is_complete[i],
             });
-            threads[i].detach();
             text_start += text_step;
         } else {
-            threads[N_THREADS - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+            threads[n_iters - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
                 text[text_start..text.len],
-                &n_tags[N_THREADS - 1],
-                &is_complete[N_THREADS - 1],
+                &n_tags[n_iters - 1],
+                &is_complete[n_iters - 1],
             });
-            threads[N_THREADS - 1].detach();
         }
+        inline for (0..n_iters) |i| threads[i].detach();
 
+        // blocks until above is complete = faster than joining threads
         while (true) {
             const v = @as(@Vector(N_THREADS, bool), is_complete);
             if (@reduce(.And, v == trues)) break;
@@ -390,33 +399,34 @@ pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []cons
     };
 
     const total_tags = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
-    const tag_step = total_tags / N_THREADS;
     const tags = try allo.alloc(Tag, total_tags);
 
     is_complete = [_]bool{false} ** N_THREADS;
+    if (n_chunks < N_THREADS) {
+        for (n_chunks..N_THREADS) |i| is_complete[i] = true;
+    }
+
     text_start = 0;
-    var tag_start: usize = 0;
+    var tags_start: usize = 0;
 
-    // TODO:
-    // 1. need to fix overlap issues
-
-    inline for (0..N_THREADS - 1) |i| {
-        getTagsVWrapper(
+    inline for (0..n_iters - 1) |i| {
+        threads[i] = try std.Thread.spawn(.{}, getTagsVWrapper, .{
             text[text_start .. text_start + text_step],
-            tags[tag_start .. tag_start + tag_step],
+            tags[tags_start .. tags_start + n_tags[i]],
             &is_complete[i],
             @truncate(text_start),
-        );
+        });
         text_start +%= text_step;
-        tag_start +%= tag_step;
+        tags_start +%= n_tags[i];
     } else {
-        getTagsVWrapper(
+        threads[n_iters - 1] = try std.Thread.spawn(.{}, getTagsVWrapper, .{
             text[text_start..text.len],
-            tags[tag_start..tags.len],
-            &is_complete[N_THREADS - 1],
+            tags[tags_start..tags.len],
+            &is_complete[n_iters - 1],
             @truncate(text_start),
-        );
+        });
     }
+    inline for (0..n_iters) |i| threads[i].detach();
 
     return tags;
 }
@@ -467,11 +477,11 @@ test "Get Tags T" {
         }
     }
 
-    // { // Multiple Threads - Adv Test
-    //     const tags = try getTagsT(3, allo, text);
-    //     defer allo.free(tags);
-    //     for (tags) |tag| {
-    //         std.debug.print("{} {}\n", .{ tag.start, tag.end });
-    //     }
-    // }
+    { // Multiple Threads - Adv Test
+        const tags = try getTagsT(3, allo, text);
+        defer allo.free(tags);
+        for (tags) |tag| {
+            std.debug.print("{} {}\n", .{ tag.start, tag.end });
+        }
+    }
 }
