@@ -341,8 +341,14 @@ fn countTagsVWrapper(text: []const u8, num_tags: *u32, is_complete: *bool) void 
     is_complete.* = true;
 }
 
-fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool) void {
+fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool, start: u32) void {
     getTagsV(text, tags);
+    if (start > 0) {
+        for (0..tags.len) |i| {
+            tags[i].start +%= start;
+            tags[i].end +%= start;
+        }
+    }
     is_complete.* = true;
 }
 
@@ -391,16 +397,25 @@ pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []cons
     text_start = 0;
     var tag_start: usize = 0;
 
+    // TODO:
+    // 1. need to fix overlap issues
+
     inline for (0..N_THREADS - 1) |i| {
         getTagsVWrapper(
             text[text_start .. text_start + text_step],
             tags[tag_start .. tag_start + tag_step],
             &is_complete[i],
+            @truncate(text_start),
         );
-        text_start += text_step;
-        tag_start += tag_step;
+        text_start +%= text_step;
+        tag_start +%= tag_step;
     } else {
-        getTagsVWrapper(text[text_start..text.len], tags[tag_start..tags.len], &is_complete[N_THREADS - 1]);
+        getTagsVWrapper(
+            text[text_start..text.len],
+            tags[tag_start..tags.len],
+            &is_complete[N_THREADS - 1],
+            @truncate(text_start),
+        );
     }
 
     return tags;
@@ -438,20 +453,25 @@ test "Get Tags T" {
         }
     }
 
-    { // Multiple Threads
+    { // Multiple Threads - Basic Test
         const tags = try getTagsT(2, allo, text);
         defer allo.free(tags);
-        for (tags) |tag| {
-            std.debug.print("{} {}\n", .{ tag.start, tag.end });
+
+        for (expected_tags, tags) |expected_tag, tag| {
+            try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
         }
 
-        //     for (expected_tags, tags) |expected_tag, tag| {
-        //         try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
-        //     }
-        //
-        //     for (expected_tag_names, tags) |expected_tag_name, tag| {
-        //         const tag_name = getTagName(text, tag);
-        //         try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-        //     }
+        for (expected_tag_names, tags) |expected_tag_name, tag| {
+            const tag_name = getTagName(text, tag);
+            try std.testing.expectEqualStrings(expected_tag_name, tag_name);
+        }
     }
+
+    // { // Multiple Threads - Adv Test
+    //     const tags = try getTagsT(3, allo, text);
+    //     defer allo.free(tags);
+    //     for (tags) |tag| {
+    //         std.debug.print("{} {}\n", .{ tag.start, tag.end });
+    //     }
+    // }
 }
