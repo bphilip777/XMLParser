@@ -352,14 +352,15 @@ fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool, start: u32
     is_complete.* = true;
 }
 
-pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []const u8) ![]Tag {
+pub fn getTagsT(comptime N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) ![]Tag {
     if (N_THREADS < 1 or N_THREADS > 12) @compileError("1 <= # of Threads <= 12");
     if (text.len == 0) unreachable;
 
     const MIN_TEXT_CHUNK_SIZE: u8 = 64;
-    const n_chunks = @max(text.len / MIN_TEXT_CHUNK_SIZE, 1);
+    const n_chunks: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(text.len)) / @as(f32, @floatFromInt(MIN_TEXT_CHUNK_SIZE))));
     const n_iters = @min(n_chunks, N_THREADS);
-    const text_step: u32 = @truncate(@max(MIN_TEXT_CHUNK_SIZE, text.len / N_THREADS));
+
+    const text_step: u32 = @max(MIN_TEXT_CHUNK_SIZE, n_chunks);
 
     var is_complete = [_]bool{false} ** N_THREADS;
     if (n_chunks < N_THREADS) {
@@ -399,6 +400,7 @@ pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []cons
 
     const total_tags = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
     const tags = try allo.alloc(Tag, total_tags);
+
     const tags_start: [N_THREADS]u32, const tags_end: [N_THREADS]u32 = blk: {
         var tags_start: [N_THREADS]u32 = undefined;
         var tags_end: [N_THREADS]u32 = undefined;
@@ -414,7 +416,6 @@ pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []cons
         break :blk .{ tags_start, tags_end };
     };
 
-    // reset is_complete
     @memset(is_complete[0..n_iters], false);
 
     for (0..n_iters) |i| {
@@ -474,7 +475,8 @@ test "Get Tags T" {
         defer allo.free(tags);
 
         for (expected_tags, tags) |expected_tag, tag| {
-            try std.testing.expect(expected_tag.start == tag.start and expected_tag.end == tag.end);
+            try std.testing.expectEqual(expected_tag.start, tag.start);
+            try std.testing.expectEqual(expected_tag.end, tag.end);
         }
 
         for (expected_tag_names, tags) |expected_tag_name, tag| {
@@ -483,11 +485,18 @@ test "Get Tags T" {
         }
     }
 
-    { // Multiple Threads - Adv Test
+    { // Multiple Threads - 1. split data into 64 byte chunks and process those w/ fewest needed threads
         const tags = try getTagsT(3, allo, text);
         defer allo.free(tags);
-        for (tags) |tag| {
-            std.debug.print("{} {}\n", .{ tag.start, tag.end });
+
+        for (expected_tags, tags) |expected_tag, tag| {
+            try std.testing.expectEqual(expected_tag.start, tag.start);
+            try std.testing.expectEqual(expected_tag.end, tag.end);
+        }
+
+        for (expected_tag_names, tags) |expected_tag_name, tag| {
+            const tag_name = getTagName(text, tag);
+            try std.testing.expectEqualStrings(expected_tag_name, tag_name);
         }
     }
 }
