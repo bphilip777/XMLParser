@@ -353,80 +353,86 @@ fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool, start: u32
 }
 
 pub fn getTagsT(comptime N_THREADS: usize, allo: std.mem.Allocator, text: []const u8) ![]Tag {
-    if (N_THREADS > 12 or N_THREADS == 0) @compileError("1 <= # of Threads <= 12");
-    std.debug.assert(text.len > 0);
+    if (N_THREADS < 1 or N_THREADS > 12) @compileError("1 <= # of Threads <= 12");
+    if (text.len == 0) unreachable;
 
-    const MIN_CHUNK_SIZE: u8 = 64;
-    const n_chunks = @max(text.len / MIN_CHUNK_SIZE, 1);
-
+    const MIN_TEXT_CHUNK_SIZE: u8 = 64;
+    const n_chunks = @max(text.len / MIN_TEXT_CHUNK_SIZE, 1);
     const n_iters = @min(n_chunks, N_THREADS);
-    const text_step = if (n_chunks < N_THREADS) MIN_CHUNK_SIZE else text.len / N_THREADS;
-    var text_start: usize = 0;
+    const text_step: u32 = @truncate(@max(MIN_TEXT_CHUNK_SIZE, text.len / N_THREADS));
 
     var is_complete = [_]bool{false} ** N_THREADS;
     if (n_chunks < N_THREADS) {
         for (n_chunks..N_THREADS) |i| is_complete[i] = true;
     }
     const trues: @Vector(N_THREADS, bool) = @splat(true);
-    var threads: [N_THREADS]std.Thread = undefined;
 
+    const text_start: [N_THREADS]u32, const text_end: [N_THREADS]u32 = blk: {
+        var text_start: [N_THREADS]u32 = undefined;
+        var text_end: [N_THREADS]u32 = undefined;
+        var curr_pos: u32 = 0;
+        for (0..n_iters - 1) |i| {
+            text_start[i] = curr_pos;
+            curr_pos +%= text_step;
+            text_end[i] = curr_pos;
+        } else {
+            text_start[n_iters - 1] = curr_pos;
+            text_end[n_iters - 1] = @truncate(text.len);
+        }
+        break :blk .{ text_start, text_end };
+    };
+
+    var threads: [N_THREADS]std.Thread = undefined;
     const n_tags: [N_THREADS]u32 = blk: {
         var n_tags = [_]u32{0} ** N_THREADS;
-
-        inline for (0..n_iters - 1) |i| {
-            threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
-                text[text_start .. text_start + text_step],
-                &n_tags[i],
-                &is_complete[i],
-            });
-            text_start += text_step;
-        } else {
-            threads[n_iters - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
-                text[text_start..text.len],
-                &n_tags[n_iters - 1],
-                &is_complete[n_iters - 1],
-            });
+        for (0..n_iters) |i| {
+            const curr_text = text[text_start[i]..text_end[i]];
+            threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{ curr_text, &n_tags[i], &is_complete[i] });
         }
-        inline for (0..n_iters) |i| threads[i].detach();
-
-        // blocks until above is complete = faster than joining threads
+        for (0..n_iters) |i| threads[i].detach();
         while (true) {
             const v = @as(@Vector(N_THREADS, bool), is_complete);
             if (@reduce(.And, v == trues)) break;
         }
-
         break :blk n_tags;
     };
 
     const total_tags = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
     const tags = try allo.alloc(Tag, total_tags);
+    const tags_start: [N_THREADS]u32, const tags_end: [N_THREADS]u32 = blk: {
+        var tags_start: [N_THREADS]u32 = undefined;
+        var tags_end: [N_THREADS]u32 = undefined;
+        var curr_pos: u32 = 0;
+        for (0..n_iters - 1) |i| {
+            tags_start[i] = curr_pos;
+            curr_pos +%= n_tags[i];
+            tags_end[i] = curr_pos;
+        } else {
+            tags_start[n_iters - 1] = curr_pos;
+            tags_end[n_iters - 1] = @truncate(tags.len);
+        }
+        break :blk .{ tags_start, tags_end };
+    };
 
-    is_complete = [_]bool{false} ** N_THREADS;
-    if (n_chunks < N_THREADS) {
-        for (n_chunks..N_THREADS) |i| is_complete[i] = true;
-    }
+    // reset is_complete
+    @memset(is_complete[0..n_iters], false);
 
-    text_start = 0;
-    var tags_start: usize = 0;
-
-    inline for (0..n_iters - 1) |i| {
+    for (0..n_iters) |i| {
+        const curr_text: []const u8 = text[text_start[i]..text_end[i]];
+        const curr_tags: []Tag = tags[tags_start[i]..tags_end[i]];
         threads[i] = try std.Thread.spawn(.{}, getTagsVWrapper, .{
-            text[text_start .. text_start + text_step],
-            tags[tags_start .. tags_start + n_tags[i]],
+            curr_text,
+            curr_tags,
             &is_complete[i],
-            @truncate(text_start),
-        });
-        text_start +%= text_step;
-        tags_start +%= n_tags[i];
-    } else {
-        threads[n_iters - 1] = try std.Thread.spawn(.{}, getTagsVWrapper, .{
-            text[text_start..text.len],
-            tags[tags_start..tags.len],
-            &is_complete[n_iters - 1],
-            @truncate(text_start),
+            text_start[i],
         });
     }
-    inline for (0..n_iters) |i| threads[i].detach();
+    for (0..n_iters) |i| threads[i].detach();
+
+    while (true) {
+        const v = @as(@Vector(N_THREADS, bool), is_complete);
+        if (@reduce(.And, v == trues)) break;
+    }
 
     return tags;
 }
