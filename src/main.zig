@@ -1,6 +1,6 @@
 const std = @import("std");
 const Data = @import("Data.zig");
-// const Tag = @import("Tags.zig");
+const Tag = @import("Tags.zig");
 
 pub fn main() !void {
     var da = std.heap.DebugAllocator(.{}){};
@@ -11,6 +11,21 @@ pub fn main() !void {
     const filename = "src/vk_extern_struct.xml";
     const data = try Data.init(allo, filename);
     defer data.deinit();
+
+    {
+        std.debug.print("Here.\n", .{});
+        const n_tags = Tag.countTagsV(data.data);
+        const tags = try allo.alloc(Tag, n_tags);
+        defer allo.free(tags);
+        Tag.getTagsV(data.data, tags);
+        std.debug.print("# of Tags: {}\n", .{tags.len});
+    }
+
+    { // 1 works but nothing greater
+        const tags = try Tag.getTagsT(1, allo, data.data);
+        defer allo.free(tags);
+        std.debug.print("# Of Tags: {}\n", .{tags.len});
+    }
 
     // const start1 = std.time.nanoTimestamp();
     // const n_tags = Tag.countV(data.data, '<');
