@@ -253,395 +253,284 @@ test "Count Chars - Vectorized Version" {
     try std.testing.expect(n_tags == n_open);
 }
 
-pub fn getTagsV(text: []const u8, tags: []Tag) void {
+pub fn getTagsV(text: []const u8, tags: []Tag, spillover_tag: ?*Tag) void {
     if (text.len == 0) unreachable;
     if (tags.len == 0) unreachable;
-    std.debug.assert(tags.len < std.math.maxInt(u32));
     const TEXT_LEN: u32 = @truncate(text.len);
+    // cases:
+    // 0. normal - same number of open and close tags w/in 64 bits
+    // 1. tag start on 1 64-bit and ends on another 64-bit
+    // 2. close tag ahead of open tag b/c of rollover from previous text
+    // 3. curr position + vector length > text length
 
     var i: u32 = 0;
-    var carry: Carry = std.mem.zeroes(Carry);
+    var carry_bit: ?u32 = null;
+    var match: Match = undefined;
+    match.carry = std.mem.zeroes(Carry);
     var tag_idx: u32 = 0;
-    var is_first: bool = true;
+    var is_first: bool = spillover_tag != null;
 
-    // normal case
     while (i + VECTOR_LEN < TEXT_LEN) : (i += VECTOR_LEN) {
-        var match = bitIndexesOfTag(text[i .. i + VECTOR_LEN], carry);
-        carry = match.carry;
+        match = bitIndexesOfTag(text[i .. i + VECTOR_LEN], match.carry);
+        if (match.open_matches == 0 and match.close_matches == 0) continue;
 
-        // spillover case
-        if (is_first and match.close_matches > 0) {
-            if (@ctz(match.close_matches) < @ctz(match.open_matches)) {
-                match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
-            }
+        if (is_first) {
+            std.debug.assert(@ctz(match.close_matches) < @ctz(match.open_matches));
+            spillover_tag.?.*.end = i + @ctz(match.close_matches);
+            match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
             is_first = false;
         }
 
         while (match.close_matches > 0) : (tag_idx += 1) {
-            const open_bit = @ctz(match.open_matches);
-            const close_bit = @ctz(match.close_matches);
+            const open_bit = blk: {
+                if (carry_bit) |bit| {
+                    std.debug.assert(@ctz(match.open_matches) > @ctz(match.close_matches));
+                    break :blk bit;
+                } else {
+                    break :blk i + @ctz(match.open_matches);
+                }
+            };
+            if (carry_bit) |_| carry_bit = null;
+            const close_bit = i + @ctz(match.close_matches);
 
             match.open_matches = BitTricks.turnOffLastBit(u64, match.open_matches);
             match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
 
-            tags[tag_idx] = Tag{
-                .start = i + open_bit,
-                .end = i + close_bit,
+            tags[tag_idx] = .{
+                .start = open_bit,
+                .end = close_bit,
             };
+        }
+
+        if (match.open_matches != 0) {
+            std.debug.assert(@popCount(match.open_matches) == 1);
+            carry_bit = i + @ctz(match.open_matches);
+        }
+    } else if (i != text.len) {
+        var text_data: [VECTOR_LEN]u8 = undefined;
+        @memcpy(text_data[0 .. text.len - i], text[i..text.len]);
+        @memset(text_data[text.len - i .. VECTOR_LEN], 0);
+
+        match = bitIndexesOfTag(&text_data, match.carry);
+        if (match.open_matches == 0 and match.close_matches == 0) return;
+
+        if (is_first) {
+            std.debug.assert(@ctz(match.close_matches) < @ctz(match.open_matches));
+            spillover_tag.?.*.end = i + @ctz(match.close_matches);
+            match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
+            is_first = false;
+        }
+
+        while (match.close_matches > 0) : (tag_idx += 1) {
+            const open_bit = if (carry_bit) |bit| bit else i + @ctz(match.open_matches);
+            carry_bit = null;
+            const close_bit = i + @ctz(match.close_matches);
+
+            match.open_matches = BitTricks.turnOffLastBit(u64, match.open_matches);
+            match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
+
+            tags[tag_idx] = .{
+                .start = open_bit,
+                .end = close_bit,
+            };
+        }
+
+        if (match.open_matches != 0) {
+            std.debug.assert(@popCount(match.open_matches) == 1);
+            tags[tag_idx].start = i + @ctz(match.open_matches);
+            carry_bit = null;
         }
     }
 
-    // leftover case
-    if (i != TEXT_LEN) {
-        var text_data: [VECTOR_LEN]u8 = undefined;
-        @memcpy(text_data[0 .. TEXT_LEN - i], text[i..text.len]);
-        @memset(text_data[TEXT_LEN - i .. VECTOR_LEN], 0);
-
-        var match = bitIndexesOfTag(&text_data, carry);
-        carry = match.carry;
-
-        // spillover case
-        if (is_first and match.close_matches > 0) {
-            if (@ctz(match.close_matches) < @ctz(match.open_matches)) {
-                match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
-            }
-            is_first = false;
-        }
-
-        while (match.close_matches > 0) : (tag_idx += 1) {
-            const open_bit = @ctz(match.open_matches);
-            const close_bit = @ctz(match.close_matches);
-
-            match.open_matches = BitTricks.turnOffLastBit(u64, match.open_matches);
-            match.close_matches = BitTricks.turnOffLastBit(u64, match.close_matches);
-
-            tags[tag_idx] = Tag{
-                .start = i + open_bit,
-                .end = i + close_bit,
-            };
-        }
+    if (carry_bit) |bit| {
+        std.debug.assert(tag_idx == tags.len);
+        std.debug.assert(tags[tag_idx].start == undefined);
+        tags[tag_idx].start = bit;
     }
 }
 
 test "Vectorized Get Tags" {
     const allo = std.testing.allocator;
-    const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
+    // cases
+    // 0. normal - same number of open and close tags, open tags precedes close tag, no intersects, all in 64 bytes
+    // 1. tag start on 1 64-bit and ends on another 64-bit
+    // 2. close tag before open tag b/c of rollover from previous text
+    // 3. curr position + vector length > text length
 
-    const expected_tags = [8]Tag{
-        .{ .start = 0, .end = 7 },
-        .{ .start = 8, .end = 14 },
-        .{ .start = 26, .end = 33 },
-        .{ .start = 34, .end = 39 },
-        .{ .start = 44, .end = 50 },
-        .{ .start = 51, .end = 56 },
-        .{ .start = 72, .end = 78 },
-        .{ .start = 79, .end = 87 },
+    // var spillover_tags = [_]?*Tag{ null, null, .{ .start = 5, .end = undefined } };
+    const texts = [_][]const u8{
+        "<member><basic>Hello World</basic><name>Jeff</name><type>VkStruc",
+        "<member><basic>Hello World</basic><name>Jeff</name><type>Vk<hello world>",
+        "type><member><basic>Hello World</basic><name>Jeff</name><type>VkStru",
+        "<member><basic>Hello World</basic><name>Jeff</name><type>",
     };
 
-    const n_tags = countTagsV(text);
-    try std.testing.expectEqual(n_tags, expected_tags.len);
-
-    const tags = try allo.alloc(Tag, n_tags);
-    defer allo.free(tags);
-    getTagsV(text, tags);
-
-    const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
-
-    for (tags, expected_tags, expected_names) |tag, expected_tag, expected_name| {
-        try std.testing.expectEqualDeep(expected_tag, tag);
-        const actual_name = getTagName(text, tag);
-        try std.testing.expectEqualStrings(expected_name, actual_name);
-    }
-}
-test "Vectorzed Get Tags - 1 close bit before open bit" {
-    const allo = std.testing.allocator;
-    const text: []const u8 = "hello><member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-
-    const n_tags = countTagsV(text);
-
-    const tags = try allo.alloc(Tag, n_tags);
-    defer allo.free(tags);
-
-    getTagsV(text, tags);
-
-    const expected_tags = [8]Tag{
-        .{ .start = 6, .end = 13 },
-        .{ .start = 14, .end = 20 },
-        .{ .start = 32, .end = 39 },
-        .{ .start = 40, .end = 45 },
-        .{ .start = 50, .end = 56 },
-        .{ .start = 57, .end = 62 },
-        .{ .start = 78, .end = 84 },
-        .{ .start = 85, .end = 93 },
+    const all_expected_starts = [_][]const u32{
+        &.{ 0, 8, 26, 34, 44, 51 },
+        &.{ 0, 8, 26, 34, 44, 51, 59 },
+        &.{ 5, 13, 31, 39, 49, 56 },
+        &.{ 0, 8, 26, 34, 44, 51 },
     };
+    const all_expected_ends = [_][]const u32{
+        &.{ 7, 14, 33, 39, 50, 56 },
+        &.{ 7, 14, 33, 39, 50, 56, 71 },
+        &.{ 12, 19, 38, 44, 55, 61 },
+        &.{ 7, 14, 33, 39, 50, 56 },
+    };
+    var expected_spillover_tag: Tag = .{ .start = 0, .end = 4 };
+    const all_expected_spillovers = [_]?*Tag{
+        null,
+        null,
+        &expected_spillover_tag,
+        null,
+    };
+    const all_expected_n_tags = [_]u32{ 6, 7, 6, 6 };
+    var spillover_example: Tag = .{ .start = 0, .end = 0 };
+    const spillover_tags = [texts.len]?*Tag{ null, null, &spillover_example, null };
+    for (
+        texts,
+        all_expected_n_tags,
+        spillover_tags,
+        all_expected_starts,
+        all_expected_ends,
+        all_expected_spillovers,
+    ) |
+        text,
+        expected_n_tags,
+        spillover_tag,
+        expected_starts,
+        expected_ends,
+        expected_spillover,
+    | {
+        // std.debug.print("Text: {s}\n", .{text});
 
-    const expected_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
+        const n_tags = countTagsV(text);
+        try std.testing.expectEqual(expected_n_tags, n_tags);
+        // std.debug.print("# of Tags: {}\n", .{n_tags});
 
-    for (tags, expected_tags, expected_names) |tag, expected_tag, expected_name| {
-        try std.testing.expectEqualDeep(expected_tag, tag);
-        const actual_name = getTagName(text, tag);
-        try std.testing.expectEqualStrings(expected_name, actual_name);
-    }
-}
+        const tags = try allo.alloc(Tag, n_tags);
+        defer allo.free(tags);
 
-test "Vectorized Get Tags - 1 close bit before open bit on second chunk of 64 bits" {
-    const allo = std.testing.allocator;
-    const text: []const u8 = "hellohellohellohellohellohellohellohellohellohellohellohellohello><member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-    const n_tags = countTagsV(text);
-
-    const tags = try allo.alloc(Tag, n_tags);
-    defer allo.free(tags);
-
-    getTagsV(text, tags);
-
-    for (tags) |tag| {
-        std.debug.print("{}-{} ", .{ tag.start, tag.end });
-    }
-
-    // const expected_tags2 = [8]Tag{
-    //     .{ .start = 6, .end = 13 },
-    //     .{ .start = 14, .end = 20 },
-    //     .{ .start = 32, .end = 39 },
-    //     .{ .start = 40, .end = 45 },
-    //     .{ .start = 50, .end = 56 },
-    //     .{ .start = 57, .end = 62 },
-    //     .{ .start = 78, .end = 84 },
-    //     .{ .start = 85, .end = 93 },
-    // };
-    //
-    // const expected_names2 = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
-    //
-    // for (tags2, expected_tags2, expected_names2) |tag, expected_tag, expected_name| {
-    //     try std.testing.expectEqualDeep(expected_tag, tag);
-    //     const actual_name = getTagName(text1, tag);
-    //     try std.testing.expectEqualStrings(expected_name, actual_name);
-    // }
-}
-
-fn countTagsVWrapper(text: []const u8, num_tags: *u32, is_complete: *bool) void {
-    num_tags.* = countTagsV(text);
-    is_complete.* = true;
-}
-
-fn getTagsVWrapper(text: []const u8, tags: []Tag, is_complete: *bool, start: u32) void {
-    if (text.len == 0) unreachable;
-    if (tags.len == 0) unreachable;
-    getTagsV(text, tags);
-    if (start > 0) {
-        for (0..tags.len) |i| {
-            tags[i].start +%= start;
-            tags[i].end +%= start;
+        getTagsV(text, tags, spillover_tag);
+        // for (tags) |tag| std.debug.print("{}\n", .{tag});
+        for (tags, expected_starts, expected_ends) |tag, expected_start, expected_end| {
+            try std.testing.expectEqual(tag.start, expected_start);
+            try std.testing.expectEqual(tag.end, expected_end);
         }
-    }
-    is_complete.* = true;
-}
 
-pub fn getTagsT(comptime N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) ![]Tag {
-    if (N_THREADS < 1 or N_THREADS > 12) @compileError("1 <= # of Threads <= 12");
-    if (text.len == 0) unreachable;
-
-    const MIN_TEXT_CHUNK_SIZE: u8 = 64; // want at least 64 bytes per chunk
-    const n_chunks: u32 = @as(u32, @truncate(text.len / MIN_TEXT_CHUNK_SIZE)) + @as(u32, @intFromBool(@mod(text.len, MIN_TEXT_CHUNK_SIZE) == 0));
-    const n_iters = @min(n_chunks, N_THREADS);
-
-    const text_step: u32 = @max(@as(u32, @truncate(text.len / n_iters)), MIN_TEXT_CHUNK_SIZE);
-
-    var is_complete = [_]bool{false} ** N_THREADS;
-    if (n_chunks < N_THREADS) {
-        for (n_chunks..N_THREADS) |i| is_complete[i] = true;
-    }
-    const trues: @Vector(N_THREADS, bool) = @splat(true);
-
-    const text_start: [N_THREADS]u32, const text_end: [N_THREADS]u32 = blk: {
-        var text_start: [N_THREADS]u32 = undefined;
-        var text_end: [N_THREADS]u32 = undefined;
-        var curr_pos: u32 = 0;
-        for (0..n_iters - 1) |i| {
-            text_start[i] = curr_pos;
-            curr_pos +%= text_step;
-            text_end[i] = curr_pos;
+        // std.debug.print("{?} {?}\n", .{ spillover_tag, expected_spillover });
+        if (spillover_tag == null) {
+            try std.testing.expectEqual(spillover_tag, expected_spillover);
         } else {
-            text_start[n_iters - 1] = curr_pos;
-            text_end[n_iters - 1] = @truncate(text.len);
+            try std.testing.expectEqual(spillover_tag.?.start, expected_spillover.?.start);
+            try std.testing.expectEqual(spillover_tag.?.end, expected_spillover.?.end);
         }
-        break :blk .{ text_start, text_end };
-    };
+        // std.debug.print("Spillover Tag: {?}\n", .{spillover_tag});
+    }
+}
 
-    var threads: [N_THREADS]std.Thread = undefined;
-    const n_tags: [N_THREADS]u32 = blk: {
-        var n_tags = [_]u32{0} ** N_THREADS;
-        for (0..n_iters) |i| {
-            const curr_text = text[text_start[i]..text_end[i]];
-            threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{ curr_text, &n_tags[i], &is_complete[i] });
+fn countTagsVWrapper(text: []const u8, n_tags: *u32, is_complete: *bool) void {
+    if (text.len == 0) unreachable;
+    n_tags.* = countTagsV(text);
+    is_complete.* = true;
+}
+
+pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) !void { // ![]Tag {
+    _ = allo;
+    if (EXPECTED_N_THREADS == 0 or EXPECTED_N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
+    if (text.len == 0 or text.len > std.math.maxInt(u32)) unreachable;
+
+    const MIN_TEXT_CHUNK_SIZE: u8 = 64;
+
+    const N_CHUNKS: u32 = @as(u32, @truncate(text.len / MIN_TEXT_CHUNK_SIZE)) + @as(u32, @intFromBool(@mod(text.len, MIN_TEXT_CHUNK_SIZE) == 0));
+    std.debug.print("# Of 64 Bit Chunks: {}\n", .{N_CHUNKS});
+
+    const n_threads: u8 = if (EXPECTED_N_THREADS < N_CHUNKS) EXPECTED_N_THREADS else @truncate(N_CHUNKS);
+    std.debug.print("# of Threads: {}\n", .{n_threads});
+
+    var threads: [EXPECTED_N_THREADS]std.Thread = undefined;
+
+    const text_step: u32 = @max(MIN_TEXT_CHUNK_SIZE, @as(u32, @truncate(text.len / n_threads)));
+    std.debug.print("Text Step Size: {}\n", .{text_step});
+
+    var is_complete = [_]bool{false} ** EXPECTED_N_THREADS;
+    if (EXPECTED_N_THREADS > n_threads) @memset(is_complete[n_threads..EXPECTED_N_THREADS], true);
+    const trues: @Vector(EXPECTED_N_THREADS, bool) = @splat(true);
+
+    const all_n_tags: [EXPECTED_N_THREADS]u32 = blk: {
+        var all_n_tags = [_]u32{0} ** EXPECTED_N_THREADS;
+
+        var text_start: u32 = 0;
+        for (0..n_threads - 1) |i| {
+            threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+                text[text_start .. text_start +% text_step],
+                &all_n_tags[i],
+                &is_complete[i],
+            });
+            text_start +%= text_step;
+        } else {
+            threads[n_threads - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+                text[text_start..text.len],
+                &all_n_tags[n_threads - 1],
+                &is_complete[n_threads - 1],
+            });
         }
-        for (0..n_iters) |i| threads[i].detach();
+
+        for (threads[0..n_threads]) |thread| thread.detach();
+
         while (true) {
-            const v = @as(@Vector(N_THREADS, bool), is_complete);
+            const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
             if (@reduce(.And, v == trues)) break;
         }
-        break :blk n_tags;
+
+        break :blk all_n_tags;
     };
 
-    const total_tags = @reduce(.Add, @as(@Vector(N_THREADS, u32), n_tags));
-    const tags = try allo.alloc(Tag, total_tags);
+    // var spill_tags: [EXPECTED_N_THREADS]Tag = undefined;
+    // var spillover_tags = [_]?*Tag{null} ** EXPECTED_N_THREADS;
+    for (all_n_tags) |n_tags| std.debug.print("# of Tags: {}\n", .{n_tags});
 
-    const tags_start: [N_THREADS]u32, const tags_end: [N_THREADS]u32 = blk: {
-        var tags_start: [N_THREADS]u32 = undefined;
-        var tags_end: [N_THREADS]u32 = undefined;
-        var curr_pos: u32 = 0;
-        for (0..n_iters - 1) |i| {
-            tags_start[i] = curr_pos;
-            curr_pos +%= n_tags[i];
-            tags_end[i] = curr_pos;
-        } else {
-            tags_start[n_iters - 1] = curr_pos;
-            tags_end[n_iters - 1] = @truncate(tags.len);
-        }
-        break :blk .{ tags_start, tags_end };
-    };
+    // @memset(is_complete[0..n_threads], false);
 
-    @memset(is_complete[0..n_iters], false);
-
-    for (0..n_iters) |i| {
-        if (text_start[i] == text_end[i] or tags_start[i] == tags_end[i]) {
-            is_complete[i] = true;
-            continue;
-        }
-        const curr_text: []const u8 = text[text_start[i]..text_end[i]];
-        const curr_tags: []Tag = tags[tags_start[i]..tags_end[i]];
-        threads[i] = try std.Thread.spawn(.{}, getTagsVWrapper, .{
-            curr_text,
-            curr_tags,
-            &is_complete[i],
-            text_start[i],
-        });
-    }
-    for (0..n_iters) |i| threads[i].detach();
-
-    while (true) {
-        const v = @as(@Vector(N_THREADS, bool), is_complete);
-        if (@reduce(.And, v == trues)) break;
-    }
-
-    return tags;
+    const total_tags = @reduce(.Add, @as(@Vector(EXPECTED_N_THREADS, u32), all_n_tags));
+    std.debug.print("Total # Of Tags: {}\n", .{total_tags});
+    // const tags = try allo.alloc(Tag, total_tags);
+    // errdefer allo.free(tags);
+    //
+    // var text_start: u32 = 0;
+    // var tag_start: u32 = 0;
+    // for (0..n_threads - 1) |i| {
+    //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
+    //         text[text_start .. text_start +% text_step],
+    //         tags[tag_start .. tag_start +% all_n_tags[i]],
+    //         spillover_tag,
+    //     });
+    //     text_start +%= text_step;
+    // } else {
+    //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
+    //         text[text_start..text.len],
+    //         tags[tag_start..tags.len],
+    //         spillover_tag,
+    //     });
+    // }
+    //
+    // for (threads[0..n_threads]) |thread| thread.detach();
+    //
+    // while (true) {
+    //     const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
+    //     if (@reduce(.And, v == trues)) break;
+    // }
+    //
+    // return tags;
 }
 
-// test "Get Tags T" {
-//     const text: []const u8 = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStructureType</type></member>";
-//     const allo = std.testing.allocator;
-//
-//     const expected_tags = [_]Tag{
-//         .{ .start = 0, .end = 7 },
-//         .{ .start = 8, .end = 14 },
-//         .{ .start = 26, .end = 33 },
-//         .{ .start = 34, .end = 39 },
-//         .{ .start = 44, .end = 50 },
-//         .{ .start = 51, .end = 56 },
-//         .{ .start = 72, .end = 78 },
-//         .{ .start = 79, .end = 87 },
-//     };
-//
-//     const expected_tag_names = [_][]const u8{ "member", "basic", "basic", "name", "name", "type", "type", "member" };
-//
-//     { // single thread works
-//         const tags = try getTagsT(1, allo, text);
-//         defer allo.free(tags);
-//
-//         for (expected_tags, tags) |expected_tag, tag| {
-//             try std.testing.expectEqual(tag.start, expected_tag.start);
-//             try std.testing.expectEqual(tag.end, expected_tag.end);
-//         }
-//
-//         for (expected_tag_names, tags) |expected_tag_name, tag| {
-//             const tag_name = getTagName(text, tag);
-//             try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-//         }
-//     }
-//
-//     { // Multiple Threads - Basic Test
-//         const tags = try getTagsT(2, allo, text);
-//         defer allo.free(tags);
-//
-//         for (expected_tags, tags) |expected_tag, tag| {
-//             try std.testing.expectEqual(expected_tag.start, tag.start);
-//             try std.testing.expectEqual(expected_tag.end, tag.end);
-//         }
-//
-//         for (expected_tag_names, tags) |expected_tag_name, tag| {
-//             const tag_name = getTagName(text, tag);
-//             try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-//         }
-//     }
-//
-//     { // Multiple Threads - 1. split data into 64 byte chunks and process those w/ fewest needed threads
-//         const tags = try getTagsT(3, allo, text);
-//         defer allo.free(tags);
-//
-//         for (expected_tags, tags) |expected_tag, tag| {
-//             try std.testing.expectEqual(expected_tag.start, tag.start);
-//             try std.testing.expectEqual(expected_tag.end, tag.end);
-//         }
-//
-//         for (expected_tag_names, tags) |expected_tag_name, tag| {
-//             const tag_name = getTagName(text, tag);
-//             try std.testing.expectEqualStrings(expected_tag_name, tag_name);
-//         }
-//     }
-// }
-//
-// test "Get Tags W/ Real-World Dataset " {
-//     const allo = std.testing.allocator;
-//
-//     const filename = "src/vk_extern_struct.xml";
-//     const data = try Data.init(allo, filename);
-//     defer data.deinit();
-//
-//     const tags_t0 = blk: {
-//         const n_tags = Tag.countTagsV(data.data);
-//         const tags = try allo.alloc(Tag, n_tags);
-//         Tag.getTagsV(data.data, tags);
-//         break :blk tags;
-//     };
-//     defer allo.free(tags_t0);
-//
-//     const tags_t1 = blk: {
-//         const tags = try Tag.getTagsT(1, allo, data.data);
-//         break :blk tags;
-//     };
-//     defer allo.free(tags_t1);
-//
-//     const tags_t2 = blk: {
-//         const tags = try Tag.getTagsT(2, allo, data.data);
-//         break :blk tags;
-//     };
-//     defer allo.free(tags_t2);
-//     for (tags_t0, tags_t2) |t0, t2| {
-//         std.debug.print("{}{} {}{}\n", .{ t0.start, t2.start, t0.end, t2.end });
-//     }
-//
-//     const tags_t4 = blk: {
-//         const tags = try Tag.getTagsT(4, allo, data.data);
-//         break :blk tags;
-//     };
-//     defer allo.free(tags_t4);
-//     // for (tags_t0, tags_t4) |t0, t4| {
-//     //     std.debug.print("{}{} {}{}\n", .{ t0.start, t4.start, t0.end, t4.end });
-//     // }
-//
-//     // breaks - why?
-//     // std.debug.print("12 Threads.\n", .{});
-//     // const tags_t12 = blk: {
-//     //     const tags = try Tag.getTagsT(11, allo, data.data);
-//     //     break :blk tags;
-//     // };
-//     // defer allo.free(tags_t12);
-//
-//     // std.debug.print("Here.\n", .{});
-//     // for (tags_t0, tags_t1, tags_t2) |tag0, tag1, tag2| {
-//     //     try std.testing.expectEqual(tag0.start, tag1.start);
-//     //     try std.testing.expectEqual(tag0.end, tag1.end);
-//     //
-//     //     try std.testing.expectEqual(tag0.start, tag2.start);
-//     //     try std.testing.expectEqual(tag0.end, tag2.end);
-//     // }
-// }
+test "Get Tags T" {
+    const allo = std.testing.allocator;
+
+    const filename = "src/vk_extern_struct.xml";
+    const data = try Data.init(allo, filename);
+    defer data.deinit();
+    std.debug.print("{s}", .{data.data});
+
+    try getTagsT(12, allo, data.data);
+}
