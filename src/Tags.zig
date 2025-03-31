@@ -459,6 +459,7 @@ fn computeThreads(comptime EXPECTED_N_THREADS: u8, TEXT_LEN: u32, MIN_TEXT_CHUNK
 
 fn countT(
     comptime EXPECTED_N_THREADS: u8,
+    comptime char: u8,
     text: []const u8,
     n_matches: *[EXPECTED_N_THREADS]u32,
 ) !void {
@@ -476,7 +477,8 @@ fn countT(
     var text_start: u32 = 0;
     var threads: [EXPECTED_N_THREADS]std.Thread = undefined;
     for (0..n_threads - 1) |i| {
-        threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+        threads[i] = try std.Thread.spawn(.{}, countVWrapper, .{
+            char,
             text[text_start .. text_start +% text_step],
             &n_matches[i],
             &is_complete[i],
@@ -484,7 +486,8 @@ fn countT(
         text_start +%= text_step;
     } else {
         if (text_start != text.len) {
-            threads[n_threads - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+            threads[n_threads - 1] = try std.Thread.spawn(.{}, countVWrapper, .{
+                char,
                 text[text_start..text.len],
                 &n_matches[n_threads - 1],
                 &is_complete[n_threads - 1],
@@ -504,20 +507,18 @@ test "Count T" {
     const text = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStruc<member><basic>Hello World</basic><name>Jeff</name><type>VkStruc<member><basic>Hello World</basic><name>Jeff</name><type>VkStruc";
     const n_threads: u8 = 4;
     var all_n_matches = [_]u32{0} ** n_threads;
-    try countT(n_threads, text, &all_n_matches);
+    try countT(n_threads, '<', text, &all_n_matches);
     const total_matches = @reduce(.Add, @as(@Vector(n_threads, u32), all_n_matches));
     const expected_total_matches: u8 = 18;
     try std.testing.expectEqual(expected_total_matches, total_matches);
 }
 
 pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) !void { // ![]Tag {
-    _ = allo;
     if (EXPECTED_N_THREADS == 0 or EXPECTED_N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
     if (text.len == 0 or text.len > std.math.maxInt(u32)) unreachable;
 
     const MIN_TEXT_CHUNK_SIZE: u8 = 64;
     const n_threads = computeThreads(EXPECTED_N_THREADS, @truncate(text.len), MIN_TEXT_CHUNK_SIZE);
-    // var threads: [EXPECTED_N_THREADS]std.Thread = undefined;
 
     var is_complete = [_]bool{false} ** EXPECTED_N_THREADS;
     if (EXPECTED_N_THREADS > n_threads) @memset(is_complete[n_threads..EXPECTED_N_THREADS], true);
@@ -526,26 +527,40 @@ pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: 
         var all_open_tags = [_]u32{0} ** EXPECTED_N_THREADS;
         var all_close_tags = [_]u32{0} ** EXPECTED_N_THREADS;
 
-        try countT(EXPECTED_N_THREADS, text, &all_open_tags);
-        try countT(EXPECTED_N_THREADS, text, &all_close_tags);
+        try countT(EXPECTED_N_THREADS, '<', text, &all_open_tags);
+        try countT(EXPECTED_N_THREADS, '>', text, &all_close_tags);
 
         break :blk .{ all_open_tags, all_close_tags };
     };
 
     for (all_open_tags, all_close_tags) |open_tags, close_tags| {
-        std.debug.print("{}-{}\n", .{ open_tags, close_tags });
+        std.debug.print("\n{}-{}", .{ open_tags, close_tags });
     }
 
-    // var spill_tags: [EXPECTED_N_THREADS]Tag = undefined;
-    // var spillover_tags = [_]?*Tag{null} ** EXPECTED_N_THREADS;
-
-    // @memset(is_complete[0..n_threads], false);
+    @memset(is_complete[0..n_threads], false);
 
     const total_tags = @reduce(.Add, @as(@Vector(EXPECTED_N_THREADS, u32), all_open_tags));
-    std.debug.print("Total # Of Tags: {}\n", .{total_tags});
-    // const tags = try allo.alloc(Tag, total_tags);
-    // errdefer allo.free(tags);
-    //
+    const tags = try allo.alloc(Tag, total_tags);
+    defer allo.free(tags);
+
+    // TODO:
+    // fill out spillover tags based on all open tags + all close tags
+    var spillover_tags = [_]?*Tag{null} ** EXPECTED_N_THREADS;
+    var rem: u32 = 0;
+    for (all_open_tags, all_close_tags, 0..) |aot, act, i| {
+        std.debug.print("Rem: {}\n", .{rem});
+        if (rem != 0 and act != 0) {
+            const tag_idx = blk: {
+                var tag_idx: u32 = 0;
+                for (0..i + 1) |j| tag_idx +%= all_open_tags[j];
+                break :blk tag_idx;
+            };
+            spillover_tags[i] = &tags[tag_idx];
+        }
+        rem +%= aot;
+        rem -%= act;
+    }
+
     // var text_start: u32 = 0;
     // var tag_start: u32 = 0;
     // for (0..n_threads - 1) |i| {
@@ -576,10 +591,12 @@ pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: 
 test "Get Tags T" {
     const allo = std.testing.allocator;
 
-    const filename = "src/vk_extern_struct.xml";
-    const data = try Data.init(allo, filename);
-    defer data.deinit();
-    std.debug.print("{s}", .{data.data});
-
-    try getTagsT(12, allo, data.data);
+    // testing spillover tags
+    // const filename = "src/vk_extern_struct.xml";
+    // const data = try Data.init(allo, filename);
+    // defer data.deinit();
+    //
+    const text = "<member><basic>Hello World</basic><name>Jeff</name><type><VkStruc>";
+    std.debug.print("{}: {s}", .{ text.len, text });
+    try getTagsT(12, allo, text);
 }
