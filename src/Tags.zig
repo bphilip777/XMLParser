@@ -429,108 +429,157 @@ test "Vectorized Get Tags" {
     }
 }
 
-fn countTagsVWrapper(text: []const u8, n_tags: *u32, is_complete: *bool) void {
+fn countVWrapper(
+    comptime char: u8,
+    text: []const u8,
+    n_chars: *u32,
+    is_complete: *bool,
+) void {
+    if (text.len == 0) unreachable;
+    n_chars.* = countScalarV(text, char);
+    is_complete.* = true;
+}
+
+fn countTagsVWrapper(
+    text: []const u8,
+    n_tags: *u32,
+    is_complete: *bool,
+) void {
     if (text.len == 0) unreachable;
     n_tags.* = countTagsV(text);
     is_complete.* = true;
 }
 
-pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) !void { // ![]Tag {
-    _ = allo;
+fn computeThreads(
+    EXPECTED_N_THREADS: u32,
+    TEXT_LEN: u32,
+    MIN_TEXT_CHUNK_SIZE: u32,
+) u32 {
+    if (EXPECTED_N_THREADS < 1 or EXPECTED_N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
+    const N_CHUNKS: u32 = @as(u32, @truncate(TEXT_LEN / MIN_TEXT_CHUNK_SIZE)) + @as(u32, @intFromBool(@mod(TEXT_LEN, MIN_TEXT_CHUNK_SIZE) == 0));
+    const n_threads: u8 = if (EXPECTED_N_THREADS < N_CHUNKS) EXPECTED_N_THREADS else @truncate(N_CHUNKS);
+    return n_threads;
+}
+
+fn countT(
+    comptime EXPECTED_N_THREADS: u8,
+    text: []const u8,
+    n_matches: *[EXPECTED_N_THREADS]u32,
+) !void {
     if (EXPECTED_N_THREADS == 0 or EXPECTED_N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
     if (text.len == 0 or text.len > std.math.maxInt(u32)) unreachable;
 
     const MIN_TEXT_CHUNK_SIZE: u8 = 64;
-
-    const N_CHUNKS: u32 = @as(u32, @truncate(text.len / MIN_TEXT_CHUNK_SIZE)) + @as(u32, @intFromBool(@mod(text.len, MIN_TEXT_CHUNK_SIZE) == 0));
-    std.debug.print("# Of 64 Bit Chunks: {}\n", .{N_CHUNKS});
-
-    const n_threads: u8 = if (EXPECTED_N_THREADS < N_CHUNKS) EXPECTED_N_THREADS else @truncate(N_CHUNKS);
-    std.debug.print("# of Threads: {}\n", .{n_threads});
-
     var threads: [EXPECTED_N_THREADS]std.Thread = undefined;
-
+    const n_threads = computeThreads(EXPECTED_N_THREADS, @truncate(text.len), MIN_TEXT_CHUNK_SIZE);
     const text_step: u32 = @max(MIN_TEXT_CHUNK_SIZE, @as(u32, @truncate(text.len / n_threads)));
-    std.debug.print("Text Step Size: {}\n", .{text_step});
-
     var is_complete = [_]bool{false} ** EXPECTED_N_THREADS;
+
     if (EXPECTED_N_THREADS > n_threads) @memset(is_complete[n_threads..EXPECTED_N_THREADS], true);
     const trues: @Vector(EXPECTED_N_THREADS, bool) = @splat(true);
 
-    const all_n_tags: [EXPECTED_N_THREADS]u32 = blk: {
-        var all_n_tags = [_]u32{0} ** EXPECTED_N_THREADS;
+    var text_start: u32 = 0;
+    for (0..n_threads - 1) |i| {
+        threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+            text[text_start .. text_start +% text_step],
+            &n_matches[i],
+            &is_complete[i],
+        });
+        text_start +%= text_step;
+    } else {
+        threads[n_threads - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
+            text[text_start..text.len],
+            &n_matches[n_threads - 1],
+            &is_complete[n_threads - 1],
+        });
+    }
 
-        var text_start: u32 = 0;
-        for (0..n_threads - 1) |i| {
-            threads[i] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
-                text[text_start .. text_start +% text_step],
-                &all_n_tags[i],
-                &is_complete[i],
-            });
-            text_start +%= text_step;
-        } else {
-            threads[n_threads - 1] = try std.Thread.spawn(.{}, countTagsVWrapper, .{
-                text[text_start..text.len],
-                &all_n_tags[n_threads - 1],
-                &is_complete[n_threads - 1],
-            });
-        }
+    for (threads[0..n_threads]) |thread| thread.detach();
 
-        for (threads[0..n_threads]) |thread| thread.detach();
-
-        while (true) {
-            const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
-            if (@reduce(.And, v == trues)) break;
-        }
-
-        break :blk all_n_tags;
-    };
-
-    // var spill_tags: [EXPECTED_N_THREADS]Tag = undefined;
-    // var spillover_tags = [_]?*Tag{null} ** EXPECTED_N_THREADS;
-    for (all_n_tags) |n_tags| std.debug.print("# of Tags: {}\n", .{n_tags});
-
-    // @memset(is_complete[0..n_threads], false);
-
-    const total_tags = @reduce(.Add, @as(@Vector(EXPECTED_N_THREADS, u32), all_n_tags));
-    std.debug.print("Total # Of Tags: {}\n", .{total_tags});
-    // const tags = try allo.alloc(Tag, total_tags);
-    // errdefer allo.free(tags);
-    //
-    // var text_start: u32 = 0;
-    // var tag_start: u32 = 0;
-    // for (0..n_threads - 1) |i| {
-    //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
-    //         text[text_start .. text_start +% text_step],
-    //         tags[tag_start .. tag_start +% all_n_tags[i]],
-    //         spillover_tag,
-    //     });
-    //     text_start +%= text_step;
-    // } else {
-    //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
-    //         text[text_start..text.len],
-    //         tags[tag_start..tags.len],
-    //         spillover_tag,
-    //     });
-    // }
-    //
-    // for (threads[0..n_threads]) |thread| thread.detach();
-    //
-    // while (true) {
-    //     const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
-    //     if (@reduce(.And, v == trues)) break;
-    // }
-    //
-    // return tags;
+    while (true) {
+        const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
+        if (@reduce(.And, v == trues)) break;
+    }
 }
 
-test "Get Tags T" {
-    const allo = std.testing.allocator;
-
-    const filename = "src/vk_extern_struct.xml";
-    const data = try Data.init(allo, filename);
-    defer data.deinit();
-    std.debug.print("{s}", .{data.data});
-
-    try getTagsT(12, allo, data.data);
+test "Count T" {
+    const text = "<member><basic>Hello World</basic><name>Jeff</name><type>VkStruc";
+    const n_threads: u8 = 2;
+    var all_n_matches = [_]u32{0} ** n_threads;
+    try countT(n_threads, text, &all_n_matches);
+    for (all_n_matches) |n_matches| std.debug.print("# of Matches: {}\n", .{n_matches});
 }
+
+// pub fn getTagsT(comptime EXPECTED_N_THREADS: u8, allo: std.mem.Allocator, text: []const u8) !void { // ![]Tag {
+//     _ = allo;
+//     if (EXPECTED_N_THREADS == 0 or EXPECTED_N_THREADS > 12) @compileError("1 <= # of Threads <= 12.");
+//     if (text.len == 0 or text.len > std.math.maxInt(u32)) unreachable;
+//
+//     const MIN_TEXT_CHUNK_SIZE: u8 = 64;
+//     const n_threads = computeThreads(EXPECTED_N_THREADS, @truncate(text.len), MIN_TEXT_CHUNK_SIZE);
+//     // var threads: [EXPECTED_N_THREADS]std.Thread = undefined;
+//
+//     var is_complete = [_]bool{false} ** EXPECTED_N_THREADS;
+//     if (EXPECTED_N_THREADS > n_threads) @memset(is_complete[n_threads..EXPECTED_N_THREADS], true);
+//
+//     const all_open_tags: [EXPECTED_N_THREADS]u32, const all_close_tags: [EXPECTED_N_THREADS]u32 = blk: {
+//         var all_open_tags = [_]u32{0} ** EXPECTED_N_THREADS;
+//         var all_close_tags = [_]u32{0} ** EXPECTED_N_THREADS;
+//
+//         try countT(EXPECTED_N_THREADS, text, &all_open_tags);
+//         try countT(EXPECTED_N_THREADS, text, &all_close_tags);
+//
+//         break :blk .{ all_open_tags, all_close_tags };
+//     };
+//
+//     for (all_open_tags, all_close_tags) |open_tags, close_tags| {
+//         std.debug.print("{}-{}\n", .{ open_tags, close_tags });
+//     }
+//
+//     // var spill_tags: [EXPECTED_N_THREADS]Tag = undefined;
+//     // var spillover_tags = [_]?*Tag{null} ** EXPECTED_N_THREADS;
+//
+//     // @memset(is_complete[0..n_threads], false);
+//
+//     const total_tags = @reduce(.Add, @as(@Vector(EXPECTED_N_THREADS, u32), all_open_tags));
+//     std.debug.print("Total # Of Tags: {}\n", .{total_tags});
+//     // const tags = try allo.alloc(Tag, total_tags);
+//     // errdefer allo.free(tags);
+//     //
+//     // var text_start: u32 = 0;
+//     // var tag_start: u32 = 0;
+//     // for (0..n_threads - 1) |i| {
+//     //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
+//     //         text[text_start .. text_start +% text_step],
+//     //         tags[tag_start .. tag_start +% all_n_tags[i]],
+//     //         spillover_tag,
+//     //     });
+//     //     text_start +%= text_step;
+//     // } else {
+//     //     threads[i] = try std.Thread.spawn(.{}, getTagsV, .{
+//     //         text[text_start..text.len],
+//     //         tags[tag_start..tags.len],
+//     //         spillover_tag,
+//     //     });
+//     // }
+//     //
+//     // for (threads[0..n_threads]) |thread| thread.detach();
+//     //
+//     // while (true) {
+//     //     const v = @as(@Vector(EXPECTED_N_THREADS, bool), is_complete);
+//     //     if (@reduce(.And, v == trues)) break;
+//     // }
+//     //
+//     // return tags;
+// }
+
+// test "Get Tags T" {
+//     const allo = std.testing.allocator;
+//
+//     const filename = "src/vk_extern_struct.xml";
+//     const data = try Data.init(allo, filename);
+//     defer data.deinit();
+//     std.debug.print("{s}", .{data.data});
+//
+//     try getTagsT(11, allo, data.data);
+// }
